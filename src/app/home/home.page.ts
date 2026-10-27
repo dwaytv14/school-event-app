@@ -865,7 +865,6 @@ export class HomePage implements OnInit, OnDestroy {
   }
   async submitAuth(): Promise<void> {
     const username = this.authUsername.trim();
-    const hadSavedSession = this.auth.hasSavedSession();
     const registering = this.authMode() === 'register';
     try {
       this.apiCheckMessage.set(null);
@@ -884,20 +883,10 @@ export class HomePage implements OnInit, OnDestroy {
       try {
         await this.workspaceSync.connect();
       } catch (error) {
-        if (!hadSavedSession) {
-          this.auth.signOut();
-          this.store.update((state) => {
-            state.role = null;
-          });
-          this.auth.error.set(
-            registering
-              ? 'Your account was created, but the shared workspace could not be saved to this device. Reconnect and sign in again.'
-              : 'Internet is required for your first login.',
-          );
-          return;
-        }
         this.workspaceSync.error.set(
-          error instanceof Error ? error.message : 'The shared workspace could not be loaded.',
+          error instanceof Error
+            ? error.message
+            : 'The shared workspace could not be loaded.',
         );
       }
       if (this.auth.authenticated()) {

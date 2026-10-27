@@ -67,9 +67,6 @@ export class AuthService {
   }
 
   async login(username: string, password: string): Promise<void> {
-    if (!navigator.onLine && !localStorage.getItem(TOKEN_KEY)) {
-      throw new Error('Internet is required for your first login.');
-    }
     await this.authenticate(() => this.api.login(username, password), true);
   }
 
@@ -78,9 +75,6 @@ export class AuthService {
     password: string,
     student: StudentRegistration,
   ): Promise<void> {
-    if (!navigator.onLine) {
-      throw new Error('Internet is required to create an account.');
-    }
     await this.authenticate(
       () => this.api.register(username, password, student),
       true,

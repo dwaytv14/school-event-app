@@ -1,5 +1,7 @@
+import { TestBed } from '@angular/core/testing';
 import { AppState } from '../models/school-event.models';
 import { DeviceStateService } from './device-state.service';
+import { SqliteConnectionService } from './sqlite-connection.service';
 
 const emptyState: AppState = {
   role: null,
@@ -20,7 +22,10 @@ describe('DeviceStateService', () => {
 
   beforeEach(() => {
     localStorage.clear();
-    device = new DeviceStateService();
+    TestBed.configureTestingModule({
+      providers: [DeviceStateService, SqliteConnectionService],
+    });
+    device = TestBed.inject(DeviceStateService);
   });
 
   it('persists a pending full-workspace reset', async () => {

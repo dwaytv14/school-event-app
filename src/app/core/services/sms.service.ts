@@ -1,17 +1,13 @@
 import { inject, Injectable, signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
-import {
-  CapacitorSQLite,
-  SQLiteConnection,
-  SQLiteDBConnection,
-  capTask,
-} from '@capacitor-community/sqlite';
+import { SQLiteDBConnection, capTask } from '@capacitor-community/sqlite';
 import {
   SmsMessage,
   Student,
   SyncItem,
 } from '../models/school-event.models';
 import { DemoStoreService } from './demo-store.service';
+import { SqliteConnectionService } from './sqlite-connection.service';
 
 const DATABASE_NAME = 'school_event_sms';
 const BROWSER_STORAGE_KEY = 'school-event-sms-outbox-v1';
@@ -27,7 +23,7 @@ export class SmsService {
   readonly ready = signal(false);
   readonly error = signal<string | null>(null);
 
-  private readonly sqlite = new SQLiteConnection(CapacitorSQLite);
+  private readonly sqlite = inject(SqliteConnectionService);
   private database?: SQLiteDBConnection;
   private storageReady?: Promise<void>;
   private accountKey = DEFAULT_ACCOUNT_KEY;
@@ -263,20 +259,7 @@ export class SmsService {
   }
 
   private async openDatabase(): Promise<SQLiteDBConnection> {
-    const consistent = await this.sqlite.checkConnectionsConsistency();
-    const connected = await this.sqlite.isConnection(DATABASE_NAME, false);
-    const database =
-      consistent.result && connected.result
-        ? await this.sqlite.retrieveConnection(DATABASE_NAME, false)
-        : await this.sqlite.createConnection(
-            DATABASE_NAME,
-            false,
-            'no-encryption',
-            1,
-            false,
-          );
-
-    if (!(await database.isDBOpen()).result) await database.open();
+    const database = await this.sqlite.open(DATABASE_NAME);
     await database.execute(`CREATE TABLE IF NOT EXISTS sms_messages (
       id TEXT PRIMARY KEY NOT NULL,
       account_key TEXT NOT NULL DEFAULT '${DEFAULT_ACCOUNT_KEY}',

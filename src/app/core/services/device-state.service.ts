@@ -1,12 +1,9 @@
-import { Injectable } from '@angular/core';
+import { inject, Injectable } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
-import {
-  CapacitorSQLite,
-  SQLiteConnection,
-  SQLiteDBConnection,
-} from '@capacitor-community/sqlite';
+import { SQLiteDBConnection } from '@capacitor-community/sqlite';
 import { AppState } from '../models/school-event.models';
 import { WorkspaceSnapshot } from './workspace-api.service';
+import { SqliteConnectionService } from './sqlite-connection.service';
 
 const DATABASE_NAME = 'school_event_device';
 const BROWSER_CACHE_KEY = 'school-event-workspace-cache-v1';
@@ -19,7 +16,7 @@ export interface CachedWorkspace {
 
 @Injectable({ providedIn: 'root' })
 export class DeviceStateService {
-  private readonly sqlite = new SQLiteConnection(CapacitorSQLite);
+  private readonly sqlite = inject(SqliteConnectionService);
   private database?: SQLiteDBConnection;
 
   async load(username: string): Promise<CachedWorkspace | null> {
@@ -101,19 +98,7 @@ export class DeviceStateService {
 
   private async open(): Promise<SQLiteDBConnection> {
     if (this.database) return this.database;
-    const consistency = await this.sqlite.checkConnectionsConsistency();
-    const exists = await this.sqlite.isConnection(DATABASE_NAME, false);
-    const database =
-      consistency.result && exists.result
-        ? await this.sqlite.retrieveConnection(DATABASE_NAME, false)
-        : await this.sqlite.createConnection(
-            DATABASE_NAME,
-            false,
-            'no-encryption',
-            1,
-            false,
-          );
-    if (!(await database.isDBOpen()).result) await database.open();
+    const database = await this.sqlite.open(DATABASE_NAME);
     await database.execute(`CREATE TABLE IF NOT EXISTS workspace_cache (
       account_key TEXT PRIMARY KEY NOT NULL,
       snapshot_json TEXT NOT NULL,

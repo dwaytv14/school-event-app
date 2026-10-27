@@ -1,4 +1,5 @@
 import { inject, Injectable, signal } from '@angular/core';
+import { Capacitor } from '@capacitor/core';
 import { AppState, SmsMessage } from '../models/school-event.models';
 import { AuthService } from './auth.service';
 import { DemoStoreService } from './demo-store.service';
@@ -424,8 +425,8 @@ export class WorkspaceSyncService {
     return (
       this.auth.authenticated() &&
       !this.auth.offline() &&
-      typeof navigator !== 'undefined' &&
-      navigator.onLine &&
+      (Capacitor.isNativePlatform() ||
+        (typeof navigator !== 'undefined' && navigator.onLine)) &&
       !this.store.state().simulatedOffline
     );
   }
