@@ -1,0 +1,66 @@
+name: Build Android APK and deploy download page
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Build Android APK
+        run: ./android/gradlew --no-daemon -p android assembleDebug
+
+      - name: Prepare download page
+        run: |
+          mkdir -p site
+          cp android/app/build/outputs/apk/debug/app-debug.apk site/school-event-app.apk
+          node -e "require('qrcode').toFile('site/download-qr.svg', 'https://dwaytv14.github.io/school-event-app/', { type: 'svg', width: 320, margin: 2 }).catch((error) => { console.error(error); process.exitCode = 1; })"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy download page
+        id: deployment
+        uses: actions/deploy-pages@v4
