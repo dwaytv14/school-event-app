@@ -1,0 +1,23 @@
+CREATE DATABASE IF NOT EXISTS school_event_app
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+USE school_event_app;
+
+CREATE TABLE IF NOT EXISTS users (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  username VARCHAR(64) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS workspace_state (
+  user_id CHAR(36) NOT NULL PRIMARY KEY,
+  revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  state_json LONGTEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_workspace_state_user
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT chk_workspace_state_json CHECK (JSON_VALID(state_json))
+) ENGINE=InnoDB;

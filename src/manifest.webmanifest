@@ -1,0 +1,12 @@
+{
+  "name": "Gather School Event Attendance",
+  "short_name": "Gather",
+  "theme_color": "#176b55",
+  "background_color": "#f5f7f3",
+  "display": "standalone",
+  "scope": "/",
+  "start_url": "/",
+  "icons": [
+    { "src": "assets/icon/gather.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

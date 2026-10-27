@@ -1,0 +1,1176 @@
+@if (!auth.authenticated() || page() === 'login' || !state().role) {
+<div class="login-screen">
+  <div class="login-topline">
+    <span class="brand-mark"><img src="/assets/NEUSTPAPAYALOGO.jpg" alt="NEUST Papaya Off-Campus seal" /></span>
+    <span class="brand-copy"><strong>GATHER</strong><small>NEUST PAPAYA OFF - CAMPUS</small></span>
+  </div>
+  <div class="login-art" aria-hidden="true">
+    <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span
+    ><span class="ticket"><ion-icon name="qr-code-outline"></ion-icon></span
+    ><span class="dot dot-one"></span><span class="dot dot-two"></span>
+  </div>
+  <p class="eyebrow">SCHOOL EVENT ATTENDANCE</p>
+  <h1>Every moment,<br />accounted for.</h1>
+  <p class="login-copy">
+    A simpler way to bring your school community together.
+  </p>
+  @if (!auth.authenticated()) {
+  <form class="auth-form" (ngSubmit)="submitAuth()">
+    <h2>{{ authMode() === 'register' ? 'Create your shared workspace' : 'Sign in to your workspace' }}</h2>
+    <p class="muted">
+      {{ authMode() === 'register' ? 'Register the first organizer account. After setup, organizers create all additional accounts in Settings.' : 'Use the account your school organizer created for you.' }}
+    </p>
+    <label
+      >Username<input
+        name="username"
+        autocomplete="username"
+        required
+        minlength="3"
+        maxlength="64"
+        [(ngModel)]="authUsername"
+    /></label>
+    <label
+      >Cloudflare Workers API address<input
+        name="apiBaseUrl"
+        type="url"
+        autocomplete="url"
+        required
+        [(ngModel)]="apiBaseUrl"
+      /><small>Enter the deployed Workers URL ending in /api. Current server: https://gather-school-api.gather-school-api.workers.dev/api</small></label
+    >
+    <label
+      >Password<input
+        name="password"
+        type="password"
+        [attr.autocomplete]="authMode() === 'register' ? 'new-password' : 'current-password'"
+        required
+        minlength="8"
+        maxlength="128"
+        [(ngModel)]="authPassword"
+    /></label>
+    @if (auth.error(); as error) {
+    <p class="scan-result rejected" role="alert">{{ error }}</p>
+    }
+    @if (workspaceSync.error(); as error) {
+    <p class="scan-result warning" role="status">{{ error }}</p>
+    }
+    <button class="primary-button full-button" type="submit" [disabled]="auth.busy()">
+      {{ auth.busy() ? 'Connecting…' : authMode() === 'register' ? 'Create account' : 'Sign in' }}
+    </button>
+    <button
+      class="auth-switch"
+      type="button"
+      (click)="authMode.set(authMode() === 'register' ? 'login' : 'register')"
+    >
+      {{ authMode() === 'register' ? 'Already have an account? Sign in' : 'First time here? Create the shared account' }}
+    </button>
+  </form>
+  } @else {
+  <div class="role-options">
+    @if (auth.role() === 'organizer') {
+    <button
+      class="role-button organizer-choice"
+      type="button"
+      (click)="chooseRole(auth.role()!)"
+    >
+      <span class="role-icon"
+        ><ion-icon name="shield-checkmark-outline"></ion-icon></span
+      ><span
+        ><strong>I'm an organizer</strong
+        ><small>Manage events and attendance</small></span
+      ><ion-icon name="chevron-forward-outline"></ion-icon>
+    </button>
+    } @else {
+    <button
+      class="role-button"
+      type="button"
+      (click)="chooseRole(auth.role()!)"
+    >
+      <span class="role-icon student-icon"
+        ><ion-icon name="person-outline"></ion-icon></span
+      ><span
+        ><strong>I'm a student</strong
+        ><small>{{ state().students.length ? 'View your pass and assigned seat' : 'Available after students are added' }}</small></span
+      ><ion-icon name="chevron-forward-outline"></ion-icon>
+    </button>
+    }
+  </div>
+  <p class="login-footnote">
+    Signed in as {{ auth.username() }} ·
+    <button class="auth-switch" type="button" (click)="signOut()">Sign out</button>
+  </p>
+  }
+</div>
+} @else {
+<div class="app-shell">
+  <header class="topbar">
+    <a class="brand" routerLink="/workspace/home"
+      ><span class="brand-mark small-mark"
+        ><img src="/assets/NEUSTPAPAYALOGO.jpg" alt="" /></span
+      ><span class="brand-copy"><strong>gather<span class="brand-period">.</span></strong><small>NEUST PAPAYA OFF - CAMPUS</small></span></a
+    ><button
+      class="network-pill"
+      [class.offline-pill]="!isOnline()"
+      type="button"
+      (click)="offline.toggleSimulation()"
+    >
+      <i></i>{{ isOnline() ? 'Online' : 'Offline' }}
+    </button>
+  </header>
+  <main class="screen-content">
+    @if (!activeEvent() && requiresEvent()) {
+    <section class="empty-state setup-empty">
+      <p class="eyebrow">EVENT SETUP</p>
+      <h1>No event yet</h1>
+      <p>Create an event before using attendance, seating, reports, or student passes.</p>
+      @if (state().role === 'organizer') {
+      <button class="primary-button full-button" type="button" (click)="createEvent()">
+        <ion-icon name="add-outline"></ion-icon> Create event
+      </button>
+      }
+    </section>
+    } @else if (page() === 'home') {
+    @if (activeEvent(); as event) {
+    <section class="welcome-row">
+      <div>
+        <p class="eyebrow">
+          {{ state().role === 'organizer' ? 'ORGANIZER DESK' : 'STUDENT PASS' }}
+        </p>
+        <h1>
+          {{ state().role === 'organizer' ? 'Your workspace' : 'Hi, ' +
+          activeStudent().name.split(' ')[0] }}
+        </h1>
+        <p class="muted">
+          {{ formatDate(event.date) }} · Your campus, in sync.
+        </p>
+      </div>
+      <span class="avatar"
+        >{{ state().role === 'organizer' ? 'OR' : activeStudent().name.slice(0,
+        1) }}</span
+      >
+    </section>
+    @if (pendingCount() > 0 || !isOnline()) {
+    <button class="sync-banner" type="button" (click)="go('settings')">
+      <span
+        ><ion-icon
+          [name]="isOnline() ? 'sync-outline' : 'cloud-offline-outline'"
+        ></ion-icon></span
+      ><span
+        ><strong>{{ pendingCount() }} items waiting to sync</strong
+        ><small
+          >{{ isOnline() ? 'Tap to sync your latest changes' : 'Saved on this
+          device while offline' }}</small
+        ></span
+      ><ion-icon name="chevron-forward-outline"></ion-icon>
+    </button>
+    }
+    <section class="featured-event">
+      <div class="featured-top">
+        <span>NEXT UP</span><span>{{ formatDate(event.date) }}</span>
+      </div>
+      <h2>{{ event.name }}</h2>
+      <p>{{ event.venue }} · {{ event.startTime }}</p>
+      <div class="featured-bottom">
+        <span
+          ><ion-icon name="people-outline"></ion-icon> {{
+          state().students.length }} students</span
+        ><button type="button" (click)="go('event-details')">
+          Event details <ion-icon name="chevron-forward-outline"></ion-icon>
+        </button>
+      </div>
+      <b aria-hidden="true">G</b>
+    </section>
+    @if (state().role === 'organizer') {
+    <section class="section-block">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">LIVE OVERVIEW</p>
+          <h2>Attendance</h2>
+        </div>
+        <button class="text-action" type="button" (click)="go('attendance')">
+          Monitor ›
+        </button>
+      </div>
+      <div class="stat-grid">
+        <button
+          class="stat-card"
+          type="button"
+          (click)="statusFilter='Present'; go('attendance')"
+        >
+          <strong>{{ presentCount }}</strong><span>Present</span></button
+        ><button
+          class="stat-card"
+          type="button"
+          (click)="statusFilter='Incomplete'; go('attendance')"
+        >
+          <strong>{{ incompleteCount }}</strong><span>Incomplete</span></button
+        ><button
+          class="stat-card"
+          type="button"
+          (click)="statusFilter='Absent'; go('attendance')"
+        >
+          <strong>{{ absentCount }}</strong><span>Absent</span>
+        </button>
+      </div>
+    </section>
+    <section class="section-block">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">QUICK ACCESS</p>
+          <h2>Make it happen</h2>
+        </div>
+      </div>
+      <div class="quick-grid">
+        <button type="button" (click)="go('scan')">
+          <ion-icon name="scan-outline"></ion-icon><strong>Scan in</strong
+          ><small>Check attendance</small></button
+        ><button type="button" (click)="go('seating')">
+          <ion-icon name="grid-outline"></ion-icon><strong>Seat map</strong
+          ><small>Manage sections</small></button
+        ><button type="button" (click)="go('sms')">
+          <ion-icon name="chatbubble-outline"></ion-icon
+          ><strong>SMS outbox</strong><small>Message families</small></button
+        ><button type="button" (click)="go('reports')">
+          <ion-icon name="stats-chart-outline"></ion-icon
+          ><strong>Reports</strong><small>Section totals</small>
+        </button><button type="button" (click)="go('students')">
+          <ion-icon name="people-outline"></ion-icon><strong>Students</strong
+          ><small>Build your roster</small>
+        </button>
+      </div>
+    </section>
+    } @else {
+    <section class="student-pass-card">
+      <div>
+        <p class="eyebrow">YOUR SEAT</p>
+        <h2>
+          {{ eventSeat(activeStudent().id)?.section ?? activeStudent().section
+          }}
+        </h2>
+        <p>
+          Row {{ eventSeat(activeStudent().id)?.row ?? '—' }} · Seat {{
+          eventSeat(activeStudent().id)?.number ?? '—' }}
+        </p>
+      </div>
+      <button type="button" (click)="go('my-qr')">
+        <img [src]="qrCode()" alt="Your student QR code" /><span
+          >View pass</span
+        >
+      </button>
+    </section>
+    <section class="section-block">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">YOUR CALENDAR</p>
+          <h2>Coming up</h2>
+        </div>
+        <button class="text-action" type="button" (click)="go('events')">
+          All events ›
+        </button>
+      </div>
+      <button class="event-row" type="button" (click)="go('history')">
+        <span class="date-block">{{ formatDate(event.date) }}</span
+        ><span
+          ><strong>{{ event.name }}</strong
+          ><small>{{ event.venue }}</small></span
+        ><span class="status-badge"
+          >{{ studentStatus(activeStudent().id) }}</span
+        >
+      </button>
+    </section>
+    }
+    <section class="section-block">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">ON THE CALENDAR</p>
+          <h2>More events</h2>
+        </div>
+        <button class="text-action" type="button" (click)="go('events')">
+          See all ›
+        </button>
+      </div>
+      @for (otherEvent of state().events; track otherEvent.id) { @if (otherEvent.id !==
+      event.id) {
+      <button class="compact-event" type="button" (click)="openEvent(otherEvent.id)">
+        <strong>{{ otherEvent.name }}</strong
+        ><small>{{ formatDate(otherEvent.date) }} · {{ otherEvent.venue }}</small>
+      </button>
+      } }
+    </section>
+    } @else {
+    <section class="welcome-row">
+      <div>
+        <p class="eyebrow">ORGANIZER DESK</p>
+        <h1>Your workspace</h1>
+        <p class="muted">Nothing has been added yet.</p>
+      </div>
+    </section>
+    <section class="empty-state setup-empty">
+      <p class="eyebrow">GET STARTED</p>
+      <h2>Build your event workspace</h2>
+      <p>Add your students and create an event. Your records will appear here.</p>
+      @if (state().role === 'organizer') {
+      <div class="action-stack">
+        <button class="primary-button full-button" type="button" (click)="createEvent()">
+          <ion-icon name="add-outline"></ion-icon> Create event
+        </button>
+        <button class="secondary-button full-button" type="button" (click)="go('students')">
+          <ion-icon name="people-outline"></ion-icon> Manage students
+        </button>
+      </div>
+      } @else {
+      <p class="muted">Ask your event organizer to add an event.</p>
+      }
+    </section>
+    }
+    } @else if (page() === 'events') {
+    <div class="page-heading">
+      <p class="eyebrow">CAMPUS CALENDAR</p>
+      <h1>Events</h1>
+      <p class="muted">Everything happening at school.</p>
+    </div>
+    @if (state().role === 'organizer') {
+    <button
+      class="primary-button full-button"
+      type="button"
+      (click)="createEvent()"
+    >
+      <ion-icon name="add-outline"></ion-icon> Create event
+    </button>
+    }
+    <div class="event-list">
+      @for (event of state().events; track event.id) {
+      <button class="event-card" type="button" (click)="openEvent(event.id)">
+        <span class="calendar-tile">{{ formatDate(event.date) }}</span
+        ><span
+          ><small
+            >{{ event.startTime }} · {{ event.sections.length }} sections</small
+          ><strong>{{ event.name }}</strong
+          ><small>{{ event.venue }}</small></span
+        ><ion-icon name="chevron-forward-outline"></ion-icon>
+      </button>
+      } @empty {
+      <div class="empty-state">
+        No events yet. Create your first event to get started.
+      </div>
+      }
+    </div>
+    } @else if (page() === 'students') {
+    <div class="page-heading">
+      <p class="eyebrow">YOUR ROSTER</p>
+      <h1>Students</h1>
+      <p class="muted">Add the students who will attend your events.</p>
+    </div>
+    <button class="primary-button full-button" type="button" (click)="createStudent()">
+      <ion-icon name="add-outline"></ion-icon> Add student
+    </button>
+    <div class="event-list">
+      @for (student of state().students; track student.id) {
+      <article class="attendance-row">
+        <span class="student-avatar">{{ initials(student.name) }}</span>
+        <div class="attendance-main">
+          <strong>{{ student.name }}</strong>
+          <small>{{ student.section }} · {{ student.mobile }}</small>
+        </div>
+      </article>
+      } @empty {
+      <div class="empty-state">
+        Your roster is empty. Add students to build your own data.
+      </div>
+      }
+    </div>
+    } @else if (page() === 'create-student') {
+    <button class="back-link" type="button" (click)="go('students')">
+      ‹ Students
+    </button>
+    <div class="page-heading">
+      <p class="eyebrow">ROSTER SETUP</p>
+      <h1>Add student</h1>
+      <p class="muted">Enter the student details for your event roster.</p>
+    </div>
+    <form class="form-stack" (ngSubmit)="saveStudent()">
+      <label>Name<input name="studentName" required [(ngModel)]="studentForm.name" /></label>
+      <label>Section<input name="studentSection" required [(ngModel)]="studentForm.section" placeholder="e.g. Grade 10-A" /></label>
+      <label>Mobile number<input name="studentMobile" required type="tel" [(ngModel)]="studentForm.mobile" placeholder="e.g. +639123456789" /></label>
+      <button class="primary-button full-button" type="submit">
+        Save student
+      </button>
+    </form>
+    } @else if (page() === 'event-details') {
+    <button class="back-link" type="button" (click)="go('events')">
+      ‹ All events
+    </button>
+    <section class="detail-hero">
+      <span>{{ formatDate(activeEvent().date) }}</span>
+      <h1>{{ activeEvent().name }}</h1>
+      <p>{{ activeEvent().description }}</p>
+      <div>
+        {{ activeEvent().startTime }} – {{ activeEvent().endTime }} · {{
+        activeEvent().venue }}
+      </div>
+    </section>
+    <section class="section-block">
+      <p class="eyebrow">EVENT PLAN</p>
+      <div class="detail-line">
+        <span>Arrival grace period</span
+        ><strong>{{ activeEvent().graceMinutes }} minutes</strong>
+      </div>
+      <div class="detail-line">
+        <span>Sections</span
+        ><strong>{{ activeEvent().sections.length }}</strong>
+      </div>
+      <div class="detail-line">
+        <span>Assigned seats</span
+        ><strong>{{ assignmentCount() }} students</strong>
+      </div>
+    </section>
+    <div class="action-stack">
+      <button
+        class="primary-button full-button"
+        type="button"
+        (click)="go(state().role === 'organizer' ? 'scan' : 'my-qr')"
+      >
+        {{ state().role === 'organizer' ? 'Scan attendance' : 'Open my student
+        pass' }}</button
+      ><button
+        class="secondary-button full-button"
+        type="button"
+        (click)="go('seating')"
+      >
+        View seating map</button
+      >@if (state().role === 'organizer') {
+      <button
+        class="quiet-button full-button"
+        type="button"
+        (click)="editEvent()"
+      >
+        Edit event details
+      </button>
+      }
+    </div>
+    } @else if (page() === 'create-event') {
+    <button class="back-link" type="button" (click)="go('event-details')">
+      ‹ Cancel
+    </button>
+    <div class="page-heading">
+      <p class="eyebrow">EVENT SETUP</p>
+      <h1>{{ editingEventId ? 'Edit event' : 'Create event' }}</h1>
+      <p class="muted">Seats are assigned to the student roster.</p>
+    </div>
+    <form class="form-stack" (ngSubmit)="saveEvent()">
+      <label
+        >Event name<input
+          name="eventName"
+          required
+          [(ngModel)]="eventForm.name"
+          placeholder="e.g. Science fair"
+      /></label>
+      <div class="form-pair">
+        <label
+          >Date<input
+            name="eventDate"
+            required
+            type="date"
+            [(ngModel)]="eventForm.date" /></label
+        ><label
+          >Grace period<input
+            name="grace"
+            type="number"
+            min="0"
+            max="120"
+            [(ngModel)]="eventForm.graceMinutes"
+        /></label>
+      </div>
+      <div class="form-pair">
+        <label
+          >Starts<input
+            name="start"
+            required
+            type="time"
+            [(ngModel)]="eventForm.startTime" /></label
+        ><label
+          >Ends<input
+            name="end"
+            required
+            type="time"
+            [(ngModel)]="eventForm.endTime"
+        /></label>
+      </div>
+      <label
+        >Venue<input
+          name="venue"
+          required
+          [(ngModel)]="eventForm.venue"
+          placeholder="Main quadrangle" /></label
+      ><label
+        >Description<textarea
+          name="description"
+          rows="3"
+          [(ngModel)]="eventForm.description"
+        ></textarea></label
+      ><button class="primary-button full-button" type="submit">
+        Save event
+      </button>
+    </form>
+    } @else if (page() === 'seating') {
+    <div class="page-heading">
+      <p class="eyebrow">SEATING SETUP</p>
+      <h1>Seat map</h1>
+      <p class="muted">{{ activeEvent().name }} · Tap a seat for details.</p>
+    </div>
+    <label class="select-label"
+      >Event<select
+        [ngModel]="state().selectedEventId"
+        (ngModelChange)="selectEvent($event)"
+      >
+        @for (event of state().events; track event.id) {
+        <option [value]="event.id">{{ event.name }}</option>
+        }
+      </select></label
+    >
+    <div class="seat-legend">
+      <span>Available</span><span>Assigned</span><span>Checked in</span
+      ><span>Violation</span>
+    </div>
+    <div class="stage-label">FRONT OF VENUE</div>
+    @for (section of activeEvent().sections; track section) {
+    <section class="seat-section">
+      <div class="seat-section-title">
+        <strong>{{ section }}</strong
+        ><small>{{ sectionAssignedCount(section) }} assigned</small>
+      </div>
+      <div class="seat-grid">
+        @for (seat of seatsInSection(section); track seat.id) {
+        <button
+          [class]="'seat seat-' + seatStatus(seat)"
+          type="button"
+          (click)="showSeat(seat)"
+        >
+          {{ seat.number }}
+        </button>
+        }
+      </div>
+    </section>
+    } @if (selectedSeat(); as seat) {
+    <div class="modal-scrim" (click)="selectedSeat.set(null)">
+      <section class="seat-sheet" (click)="$event.stopPropagation()">
+        <button
+          class="sheet-close"
+          type="button"
+          (click)="selectedSeat.set(null)"
+        >
+          ×
+        </button>
+        <p class="eyebrow">{{ seat.section }}</p>
+        <h2>Row {{ seat.row }} · Seat {{ seat.number }}</h2>
+        <p>
+          {{ seatStudent(seat)?.name ?? 'Available seat' }} · {{
+          seatStatus(seat) }}
+        </p>
+        @if (state().role === 'organizer' && !recordFor(seat.studentId ??
+        '')?.timeIn) {
+        <label class="select-label"
+          >Assign student<select [(ngModel)]="selectedStudentToAssign">
+            @for (student of state().students; track student.id) {
+            <option [value]="student.id">
+              {{ student.name }} · {{ student.section }}
+            </option>
+            }
+          </select></label
+        ><button
+          class="primary-button full-button"
+          type="button"
+          (click)="assignSelectedStudent()"
+        >
+          Assign to this seat
+        </button>
+        }
+      </section>
+    </div>
+    } @if (eventViolations().length) {
+    <section class="violation-list">
+      <p class="eyebrow">SEATING VIOLATIONS</p>
+      @for (violation of eventViolations(); track violation.id) {
+      <p>{{ studentName(violation.studentId) }} · {{ violation.reason }}</p>
+      }
+    </section>
+    } } @else if (page() === 'scan') {
+    <div class="page-heading">
+      <p class="eyebrow">CHECK-IN DESK</p>
+      <h1>Scan attendance</h1>
+      <p class="muted">
+        {{ activeEvent().name }} · First scan in, second scan out.
+      </p>
+    </div>
+    <label class="select-label"
+      >Gate section<select [(ngModel)]="gateSection">
+        @for (section of activeEvent().sections; track section) {
+        <option [value]="section">{{ section }}</option>
+        }
+      </select></label
+    >
+    <div class="scanner-frame">
+      <video #camera muted playsinline></video>
+      <div class="scan-reticle"></div>
+      <p>Align student pass inside the frame</p>
+    </div>
+    <button
+      class="secondary-button full-button"
+      type="button"
+      (click)="startCamera()"
+    >
+      Open camera scanner
+    </button>
+    <div class="divider-label">OR SIMULATE A SCAN</div>
+    <label class="select-label"
+      >Choose student<select [(ngModel)]="scanStudentId">
+        @for (student of state().students; track student.id) {
+        <option [value]="student.id">
+          {{ student.name }} · {{ student.section }}
+        </option>
+        }
+      </select></label
+    ><button
+      class="primary-button full-button"
+      type="button"
+      (click)="scanStudent(scanStudentId)"
+    >
+      Simulate scan
+    </button>
+    @if (scanResult(); as result) {
+    <section [class]="'scan-result ' + result.tone">
+      <strong>{{ result.message }}</strong>@if (result.student) {
+      <span>{{ result.student.name }} · {{ result.student.section }}</span> }@if
+      (result.seat) {
+      <span>Row {{ result.seat.row }} · Seat {{ result.seat.number }}</span>
+      }<small>{{ result.time }}</small>
+    </section>
+    }<button class="text-action" type="button" (click)="go('seating')">
+      {{ eventViolations().length }} seating violations ›
+    </button>
+    } @else if (page() === 'attendance' || page() === 'history') {
+    <div class="page-heading">
+      <p class="eyebrow">
+        {{ page() === 'history' ? 'MY EVENT RECORD' : 'LIVE MONITOR' }}
+      </p>
+      <h1>{{ page() === 'history' ? 'My attendance' : 'Attendance' }}</h1>
+      <p class="muted">
+        {{ page() === 'history' ? activeStudent().name + ' · ' +
+        activeStudent().section : activeEvent().name + ' · ' +
+        state().students.length + ' students' }}
+      </p>
+    </div>
+    @if (page() === 'attendance') {
+    <label class="select-label"
+      >Event<select
+        [ngModel]="state().selectedEventId"
+        (ngModelChange)="selectEvent($event)"
+      >
+        @for (event of state().events; track event.id) {
+        <option [value]="event.id">{{ event.name }}</option>
+        }
+      </select></label
+    >
+    <div class="search-field">
+      <ion-icon name="search-outline"></ion-icon
+      ><input
+        aria-label="Search students"
+        [(ngModel)]="searchText"
+        placeholder="Search student or section"
+      />
+    </div>
+    <div class="filter-row">
+      <button type="button" (click)="statusFilter='All'">All</button>@for
+      (status of ['Present','Late','Incomplete','Absent']; track status) {
+      <button type="button" (click)="statusFilter=status">{{ status }}</button>
+      }
+    </div>
+    @for (student of monitorStudents(); track student.id) {
+    <article class="attendance-row">
+      <span class="student-avatar">{{ initials(student.name) }}</span>
+      <div class="attendance-main">
+        <strong>{{ student.name }}</strong
+        ><small>{{ student.section }} · {{ seatLabel(student.id) }}</small>
+        <div class="time-pair">
+          <span>IN {{ formatTime(recordFor(student.id)?.timeIn) }}</span
+          ><span>OUT {{ formatTime(recordFor(student.id)?.timeOut) }}</span
+          ><span>{{ durationLabel(student.id) }}</span>
+        </div>
+      </div>
+      <span [class]="'status-badge ' + statusClass(studentStatus(student.id))"
+        >{{ studentStatus(student.id) }}</span
+      >
+    </article>
+    } @empty {
+    <div class="empty-state">No students match this view.</div>
+    } } @else {
+    <div class="profile-strip">
+      <strong>{{ activeStudent().name }}</strong
+      ><small
+        >{{ activeStudent().section }} · {{ activeStudent().mobile }}</small
+      >
+    </div>
+    @for (event of state().events; track event.id) {
+    <article class="attendance-row">
+      <span class="student-avatar">{{ initials(activeStudent().name) }}</span>
+      <div class="attendance-main">
+        <strong>{{ event.name }}</strong
+        ><small
+          >{{ formatDate(event.date) }} · {{ historySeatLabel(event,
+          activeStudent().id) }}</small
+        >
+        <div class="time-pair">
+          <span
+            >IN {{ formatTime(recordForEvent(event.id,
+            activeStudent().id)?.timeIn) }}</span
+          ><span
+            >OUT {{ formatTime(recordForEvent(event.id,
+            activeStudent().id)?.timeOut) }}</span
+          >
+        </div>
+      </div>
+      <span
+        [class]="'status-badge ' + statusClass(eventStudentStatus(event, activeStudent().id))"
+        >{{ eventStudentStatus(event, activeStudent().id) }}</span
+      >
+    </article>
+    } } } @else if (page() === 'reports') {
+    <div class="page-heading">
+      <p class="eyebrow">ATTENDANCE INSIGHTS</p>
+      <h1>Section report</h1>
+      <p class="muted">A clear view of who made it.</p>
+    </div>
+    <label class="select-label"
+      >Event<select
+        [ngModel]="state().selectedEventId"
+        (ngModelChange)="selectEvent($event)"
+      >
+        @for (event of state().events; track event.id) {
+        <option [value]="event.id">{{ event.name }}</option>
+        }
+      </select></label
+    >
+    <div class="report-topline">
+      <strong
+        >{{ activeEvent().name }} · {{ formatDate(activeEvent().date) }}</strong
+      ><button type="button" (click)="exportCsv()">
+        <ion-icon name="download-outline"></ion-icon> CSV
+      </button>
+    </div>
+    @for (section of sectionReport(); track section.section) {
+    <button
+      class="report-card"
+      type="button"
+      (click)="selectedReportSection.set(selectedReportSection() === section.section ? '' : section.section)"
+    >
+      <span class="report-card-head"
+        ><strong>{{ section.section }}</strong
+        ><b>{{ section.percentage }}%</b></span
+      ><span class="bar-track"
+        ><i [style.width.%]="section.percentage"></i></span
+      ><span class="report-counts"
+        >{{ section.total }} total · {{ section.present }} present · {{
+        section.late }} late · {{ section.incomplete }} incomplete · {{
+        section.absent }} absent</span
+      ><span class="report-foot"
+        >Average duration: {{ section.average }} min</span
+      >@if (selectedReportSection() === section.section) {
+      <span class="drill-list"
+        >@for (row of section.rows; track row.student.id) {
+        <span>{{ row.student.name }} · {{ row.status }}</span> }</span
+      >
+      }
+    </button>
+    }<button
+      class="secondary-button full-button"
+      type="button"
+      (click)="exportCsv()"
+    >
+      Export CSV
+    </button>
+    } @else if (page() === 'sms') {
+    <div class="page-heading">
+      <p class="eyebrow">MESSAGES</p>
+      <h1>SMS outbox</h1>
+      <p class="muted">
+        {{ smsMessages().length }} messages · stored on this device
+      </p>
+    </div>
+    @if (sms.error(); as error) {
+    <p class="scan-result rejected" role="alert">{{ error }}</p>
+    }
+    <button
+      class="primary-button full-button"
+      type="button"
+      (click)="go('compose-sms')"
+    >
+      Compose SMS
+    </button>
+    <div class="sms-inbox">
+      @if (!sms.ready() && !sms.error()) {
+      <div class="empty-state">Loading SMS outbox…</div>
+      } @else {
+      @for (message of smsMessages(); track message.id) {
+      <article class="sms-thread">
+        <div class="sms-recipient">
+          <strong>{{ message.recipientName }}</strong
+          ><small>{{ message.recipientNumber }}</small
+          ><span class="status-badge">{{ message.status }}</span>
+        </div>
+        <p>{{ message.text }}</p>
+        <small
+          >{{ formatTime(message.createdAt) }} · {{ message.syncStatus }}</small
+        ><a [href]="smsUri(message)">Open in SMS app</a>
+      </article>
+      } @empty {
+      <div class="empty-state">
+        Your outbox is clear. Attendance confirmations appear here.
+      </div>
+      }
+      }
+    </div>
+    } @else if (page() === 'compose-sms') {
+    <button class="back-link" type="button" (click)="go('sms')">
+      ‹ Outbox
+    </button>
+    <div class="page-heading">
+      <p class="eyebrow">NEW MESSAGE</p>
+      <h1>Compose SMS</h1>
+      <p class="muted">Messages are queued locally or marked sent.</p>
+    </div>
+    @if (sms.error(); as error) {
+    <p class="scan-result rejected" role="alert">{{ error }}</p>
+    }
+    @if (sms.error(); as error) {
+    <p class="sms-storage-error" role="alert">{{ error }}</p>
+    }
+    <form class="form-stack" (ngSubmit)="sendMessage()">
+      <label
+        >Send to<select name="recipientMode" [(ngModel)]="recipientMode">
+          <option value="all">All students</option>
+          <option value="section">One section</option>
+          <option value="student">One student</option>
+        </select></label
+      >@if (recipientMode === 'section') {
+      <label
+        >Section<select name="recipientSection" [(ngModel)]="recipientSection">
+          @for (section of activeEvent().sections; track section) {
+          <option [value]="section">{{ section }}</option>
+          }
+        </select></label
+      >
+      }@if (recipientMode === 'student') {
+      <label
+        >Student<select
+          name="recipientStudent"
+          [(ngModel)]="recipientStudentId"
+        >
+          @for (student of state().students; track student.id) {
+          <option [value]="student.id">
+            {{ student.name }} · {{ student.section }}
+          </option>
+          }
+        </select></label
+      >
+      }<label
+        >Template<select
+          name="messageTemplate"
+          [(ngModel)]="messageTemplate"
+          (ngModelChange)="chooseTemplate($event)"
+        >
+          <option>Event reminder</option>
+          <option>Schedule change</option>
+          <option>Cancellation</option>
+          <option>Attendance confirmation</option>
+        </select></label
+      ><label
+        >Message<textarea
+          name="messageText"
+          required
+          rows="5"
+          maxlength="320"
+          [(ngModel)]="messageText"
+        ></textarea
+        ><small>{{ messageText.length }}/320</small></label
+      ><button class="primary-button full-button" type="submit">
+        Send message
+      </button>
+    </form>
+    } @else if (page() === 'my-qr') {
+    <div class="page-heading">
+      <p class="eyebrow">STUDENT ENTRY PASS</p>
+      <h1>My QR & seat</h1>
+      <p class="muted">Have this ready at the event entrance.</p>
+    </div>
+    <label class="select-label"
+      >Student profile<select
+        [ngModel]="state().studentId"
+        (ngModelChange)="setStudent($event)"
+      >
+        @for (student of state().students; track student.id) {
+        <option [value]="student.id">
+          {{ student.name }} · {{ student.section }}
+        </option>
+        }
+      </select></label
+    >
+    <section class="pass-card">
+      <span>GATHER PASS · VALID</span>@if (qrCode()) {
+      <img [src]="qrCode()" alt="Student QR code pass" /> }
+      <h2>{{ activeStudent().name }}</h2>
+      <p>{{ activeStudent().id }} · {{ activeStudent().section }}</p>
+      <div class="pass-seat">
+        <span>{{ activeEvent().name }}</span
+        ><strong>{{ seatLabel(activeStudent().id) }}</strong>
+      </div>
+    </section>
+    <button
+      class="secondary-button full-button"
+      type="button"
+      (click)="go('history')"
+    >
+      View attendance history
+    </button>
+    } @else if (page() === 'settings') {
+    <div class="page-heading">
+      <p class="eyebrow">PREFERENCES</p>
+      <h1>Settings</h1>
+      <p class="muted">Workspace preferences and sync.</p>
+    </div>
+    <section class="settings-panel">
+      <div class="setting-row">
+        <span>{{ isOnline() ? 'ONLINE' : 'OFFLINE MODE' }}</span
+        ><small
+          >{{ isOnline() ? 'Changes sync as you go.' : 'Changes are saved on
+          this device.' }}</small
+        ><button
+          class="toggle-switch"
+          type="button"
+          role="switch"
+          [attr.aria-checked]="!state().simulatedOffline"
+          (click)="offline.toggleSimulation()"
+        >
+          Toggle
+        </button>
+      </div>
+      @if (workspaceSync.error(); as syncError) {
+      <p class="scan-result warning" role="status">{{ syncError }}</p>
+      }
+      <div class="sync-progress" [hidden]="!syncProgress()">
+        <span [style.width.%]="syncProgress() ? 100 : 0"></span>
+      </div>
+      <div class="detail-line">
+        <span>Pending changes</span><strong>{{ workspaceSync.pending() ? 'Yes' : 'No' }}</strong>
+      </div>
+      <button
+        class="primary-button full-button"
+        type="button"
+        [disabled]="!isOnline() || syncProgress()"
+        (click)="syncWorkspace()"
+      >
+        {{ syncProgress() ? 'Syncing…' : 'Sync now' }}
+      </button>
+    </section>
+    @if (activeEvent(); as event) {
+    <section class="settings-panel">
+      <p class="eyebrow">ATTENDANCE RULES</p>
+      <h2>Late arrival grace period</h2>
+      <label class="select-label"
+        >{{ event.name }}<input
+          type="number"
+          min="0"
+          max="120"
+          [ngModel]="event.graceMinutes"
+          (ngModelChange)="updateGracePeriod($event)"
+      /></label>
+    </section>
+    } @else {
+    <div class="empty-state">Create an event to set its attendance rules.</div>
+    }
+    <section class="settings-panel">
+      <p class="eyebrow">SCHOOL ACCOUNTS</p>
+      <h2>Create an account</h2>
+      <p class="setting-help">Create organizer logins or link each student's login to their existing roster record. Share the username and temporary password privately.</p>
+      <form class="auth-form" (ngSubmit)="createManagedAccount()">
+        <label
+          >Account type<select name="accountRole" [(ngModel)]="accountForm.role">
+            <option value="student">Student</option>
+            <option value="organizer">Organizer</option>
+          </select></label
+        >
+        @if (accountForm.role === 'student') {
+        <label
+          >Student roster entry<select
+            name="accountStudent"
+            required
+            [(ngModel)]="accountForm.studentId"
+          >
+            <option value="" disabled>Select a student</option>
+            @for (student of state().students; track student.id) {
+            <option [value]="student.id">{{ student.name }} · {{ student.section }}</option>
+            }
+          </select></label
+        >
+        }
+        <label
+          >Username<input
+            name="accountUsername"
+            autocomplete="off"
+            required
+            minlength="3"
+            maxlength="64"
+            [(ngModel)]="accountForm.username"
+        /></label>
+        <label
+          >Temporary password<input
+            name="accountPassword"
+            type="password"
+            autocomplete="new-password"
+            required
+            minlength="8"
+            maxlength="128"
+            [(ngModel)]="accountForm.password"
+        /></label>
+        <button class="primary-button full-button" type="submit">
+          Create school account
+        </button>
+      </form>
+      <h2>Reset an account password</h2>
+      <form class="auth-form" (ngSubmit)="resetManagedAccountPassword()">
+        <label
+          >School account<select
+            name="resetAccountUsername"
+            required
+            [(ngModel)]="resetAccountUsername"
+          >
+            @for (account of managedAccounts(); track account.username) {
+            <option [value]="account.username">{{ account.username }} · {{ account.role }}</option>
+            }
+          </select></label
+        >
+        <label
+          >New password<input
+            name="resetAccountPassword"
+            type="password"
+            autocomplete="new-password"
+            required
+            minlength="8"
+            maxlength="128"
+            [(ngModel)]="resetAccountPassword"
+        /></label>
+        <button class="secondary-button full-button" type="submit">
+          Reset password
+        </button>
+      </form>
+      @if (accountError(); as error) {
+      <p class="scan-result rejected" role="alert">{{ error }}</p>
+      }
+      @if (accountMessage(); as message) {
+      <p class="sync-confirmation" role="status">{{ message }}</p>
+      }
+    </section>
+    <section class="settings-panel">
+      <p class="eyebrow">CLOUDFLARE WORKERS</p>
+      <h2>Hosted API address</h2>
+      <label class="select-label"
+        >Cloudflare Workers URL<input
+          name="settingsApiBaseUrl"
+          type="url"
+          autocomplete="url"
+          required
+          [(ngModel)]="apiBaseUrl"
+      /></label>
+      <small class="setting-help"
+        >Use the deployed Workers URL ending in /api. This address stays the same when the app is restarted.</small
+      >
+      <button
+        class="secondary-button full-button"
+        type="button"
+        (click)="saveApiAddress()"
+      >
+        Save API address
+      </button>
+      @if (apiAddressSaved()) {
+      <p class="sync-confirmation" role="status">API address saved on this device.</p>
+      }
+    </section>
+    <section class="settings-panel">
+      <p class="eyebrow">WORKSPACE DATA</p>
+      <h2>Clear workspace</h2>
+      <button
+        class="secondary-button full-button"
+        type="button"
+        (click)="resetWorkspace()"
+      >
+        Clear all workspace data
+      </button>
+    </section>
+    <button class="sign-out" type="button" (click)="signOut()">Sign out</button>
+    }
+  </main>
+  <nav class="bottom-tabs" aria-label="Main navigation">
+    <button
+      [class.tab-active]="page() === 'home'"
+      type="button"
+      (click)="go('home')"
+    >
+      <ion-icon name="home-outline"></ion-icon><span>Home</span></button
+    ><button
+      [class.tab-active]="page() === 'events' || page() === 'event-details'"
+      type="button"
+      (click)="go('events')"
+    >
+      <ion-icon name="calendar-outline"></ion-icon><span>Events</span></button
+    >@if (state().role === 'organizer') {
+    <button
+      class="tab-scan"
+      [class.tab-active]="page() === 'scan'"
+      type="button"
+      (click)="go('scan')"
+    >
+      <ion-icon name="scan-outline"></ion-icon><span>Scan</span></button
+    ><button
+      [class.tab-active]="page() === 'attendance'"
+      type="button"
+      (click)="go('attendance')"
+    >
+      <ion-icon name="people-outline"></ion-icon><span>Monitor</span></button
+    ><button
+      [class.tab-active]="page() === 'reports'"
+      type="button"
+      (click)="go('reports')"
+    >
+      <ion-icon name="stats-chart-outline"></ion-icon><span>Reports</span>
+    </button>
+    <button
+      [class.tab-active]="page() === 'settings'"
+      type="button"
+      (click)="go('settings')"
+    >
+      <ion-icon name="settings-outline"></ion-icon><span>Settings</span>
+    </button>
+    } @else {
+    <button
+      [class.tab-active]="page() === 'my-qr'"
+      type="button"
+      (click)="go('my-qr')"
+    >
+      <ion-icon name="qr-code-outline"></ion-icon><span>My pass</span></button
+    ><button
+      [class.tab-active]="page() === 'history'"
+      type="button"
+      (click)="go('history')"
+    >
+      <ion-icon name="checkmark-done-outline"></ion-icon
+      ><span>History</span></button
+    ><button
+      [class.tab-active]="page() === 'settings'"
+      type="button"
+      (click)="go('settings')"
+    >
+      <ion-icon name="settings-outline"></ion-icon><span>Settings</span>
+    </button>
+    }
+  </nav>
+</div>
+}

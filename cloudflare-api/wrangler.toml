@@ -1,0 +1,14 @@
+name = "gather-school-api"
+main = "src/index.js"
+compatibility_date = "2026-10-12"
+workers_dev = true
+preview_urls = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "gather-school-data"
+database_id = "41fe1732-b88d-43c5-9d6b-3b2c33b6d79f"
+migrations_dir = "migrations"
+
+[vars]
+CLIENT_ORIGINS = "capacitor://localhost,https://localhost,http://localhost:4200,http://127.0.0.1:4200"

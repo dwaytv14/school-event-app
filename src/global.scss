@@ -1,0 +1,95 @@
+@import "@ionic/angular/css/core.css";
+
+@import "@ionic/angular/css/normalize.css";
+@import "@ionic/angular/css/structure.css";
+@import "@ionic/angular/css/typography.css";
+@import "@ionic/angular/css/display.css";
+
+@import "@ionic/angular/css/padding.css";
+@import "@ionic/angular/css/float-elements.css";
+@import "@ionic/angular/css/text-alignment.css";
+@import "@ionic/angular/css/text-transformation.css";
+@import "@ionic/angular/css/flex-utils.css";
+
+:root {
+  color-scheme: light;
+  --ion-font-family: "Trebuchet MS", sans-serif;
+  --ion-color-primary: #1c3894;
+  --ion-color-primary-rgb: 28, 56, 148;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-color-primary-contrast-rgb: 255, 255, 255;
+  --ion-color-primary-shade: #193183;
+  --ion-color-primary-tint: #344da0;
+  --ion-color-secondary: #ffcc00;
+  --ion-color-secondary-rgb: 255, 204, 0;
+  --ink: #14234f;
+  --muted: #68738f;
+  --paper: #ffffff;
+  --line: #e3e7f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--paper);
+}
+html {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+body {
+  position: static;
+  height: auto;
+  overflow: visible;
+  transform: none;
+  margin: 0;
+  color: var(--ink);
+  font-family: "Trebuchet MS", sans-serif;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.brand-copy {
+  display: grid;
+  gap: 2px;
+}
+.brand-copy strong {
+  font: 700 22px/1 Georgia, serif;
+}
+.brand-copy small {
+  color: var(--ion-color-primary);
+  font: 800 7px/1.2 "Trebuchet MS", sans-serif;
+}
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.login-topline .brand-mark {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+}
+.login-topline .brand-copy strong {
+  font-size: 14px;
+  letter-spacing: 1.2px;
+}
+.login-topline .brand-copy small {
+  font-size: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+  }
+}
