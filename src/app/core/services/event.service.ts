@@ -19,15 +19,24 @@ export class EventService {
     const state = this.store.state();
     const existing = state.events.find((event) => event.id === existingId);
     const eventId = existing?.id ?? `EVT-${Date.now()}`;
+    const requiredSections = input.requiredSections ?? [];
+    const attendees = input.requiredSections
+      ? state.students.filter(
+          (student) =>
+            student.sectionId !== undefined &&
+            requiredSections.includes(student.sectionId),
+        )
+      : state.students;
+    const eventSections = [...new Set(attendees.map((student) => student.section))];
     const event: SchoolEvent = existing
       ? { ...existing, ...input }
       : {
           ...input,
           id: eventId,
-          sections: [
-            ...new Set(state.students.map((student) => student.section)),
-          ],
-          seats: this.createSeats(eventId, state.students),
+          sections: eventSections,
+          seats: this.createSeats(eventId, attendees),
+          requiredSections,
+          approvalStatus: state.role === 'organizer' ? 'pending' : 'approved',
         };
     this.store.update((current) => {
       if (existing)

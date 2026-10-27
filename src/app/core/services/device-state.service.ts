@@ -94,6 +94,7 @@ export class DeviceStateService {
         violations: state.violations,
         messages: state.messages,
         syncItems: state.syncItems,
+        announcements: state.announcements ?? [],
       },
     };
   }
@@ -179,7 +180,8 @@ export class DeviceStateService {
       typeof state === 'object' &&
       state !== null &&
       ['students', 'events', 'attendance', 'violations', 'messages', 'syncItems']
-        .every((key) => Array.isArray(state[key as keyof typeof state]))
+        .every((key) => Array.isArray(state[key as keyof typeof state])) &&
+      (!('announcements' in state) || Array.isArray(state.announcements))
     );
   }
 

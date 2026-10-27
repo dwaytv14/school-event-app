@@ -43,7 +43,8 @@ jobs:
       - name: Prepare download page
         run: |
           mkdir -p site
-          cp android/app/build/outputs/apk/debug/app-debug.apk site/school-event-app.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk "site/school-event-app-${GITHUB_SHA::7}.apk"
+          sed -i "s|./school-event-app.apk|./school-event-app-${GITHUB_SHA::7}.apk|" site/index.html
           node -e "require('qrcode').toFile('site/download-qr.svg', 'https://dwaytv14.github.io/school-event-app/', { type: 'svg', width: 320, margin: 2 }).catch((error) => { console.error(error); process.exitCode = 1; })"
 
       - name: Upload Pages artifact

@@ -12,6 +12,7 @@ const emptyState: AppState = {
   violations: [],
   messages: [],
   syncItems: [],
+  announcements: [],
 };
 
 describe('DeviceStateService', () => {

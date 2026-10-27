@@ -1,4 +1,4 @@
-@if (!auth.authenticated() || page() === 'login' || !state().role) {
+@if (!auth.authenticated() || !state().role) {
 <div class="login-screen">
   <div class="login-topline">
     <span class="brand-mark"><img src="/assets/NEUSTPAPAYALOGO.jpg" alt="NEUST Papaya Off-Campus seal" /></span>
@@ -16,10 +16,76 @@
   </p>
   @if (!auth.authenticated()) {
   <form class="auth-form" (ngSubmit)="submitAuth()">
-    <h2>{{ authMode() === 'register' ? 'Create your shared workspace' : 'Sign in to your workspace' }}</h2>
+    <h2>{{ authMode() === 'register' ? 'Create student account' : 'Sign in' }}</h2>
     <p class="muted">
-      {{ authMode() === 'register' ? 'Register the first organizer account. After setup, organizers create all additional accounts in Settings.' : 'Use the account your school organizer created for you.' }}
+      {{ authMode() === 'register' ? 'Create your student account to get your QR pass.' : 'Sign in with your student or organizer account.' }}
     </p>
+    @if (authMode() === 'register') {
+    <label
+      >Full name<input
+        name="signupName"
+        autocomplete="name"
+        required
+        maxlength="120"
+        [(ngModel)]="signupForm.name"
+    /></label>
+    <label
+      >Course<select
+        name="signupCourse"
+        required
+        [(ngModel)]="signupForm.course"
+        (ngModelChange)="signupCourseChanged()"
+      >
+        @for (course of courses; track course) {
+        <option [value]="course">{{ course }}</option>
+        }
+      </select></label
+    >
+    <label
+      >Year level<select
+        name="signupYear"
+        required
+        [disabled]="signupYears().length === 0"
+        [(ngModel)]="signupForm.yearLevel"
+        (ngModelChange)="signupYearChanged()"
+      >
+        @for (year of signupYears(); track year) {
+        <option [value]="year">{{ year }}</option>
+        }
+      </select></label
+    >
+    @if (signupSections().length === 1) {
+    <label>Section<input [value]="signupSections()[0].name" readonly /></label>
+    } @else {
+    <label
+      >Section<select
+        name="signupSection"
+        required
+        [disabled]="signupSections().length === 0"
+        [(ngModel)]="signupForm.sectionId"
+      >
+        <option value="" disabled>Select a section</option>
+        @for (section of signupSections(); track section.id) {
+        <option [value]="section.id">{{ section.name }}</option>
+        }
+      </select></label
+    >
+    }
+    @if (signupSections().length === 0) {
+    <p class="muted">No sections are available for this course and year yet. Contact the super admin.</p>
+    }
+    <label
+      >Mobile number<input
+        name="signupMobile"
+        type="tel"
+        autocomplete="tel"
+        placeholder="09XXXXXXXXX"
+        pattern="(09[0-9]{9}|\+639[0-9]{9})"
+        title="Enter a Philippine mobile number, e.g. 09123456789 or +639123456789"
+        required
+        [(ngModel)]="signupForm.mobile"
+    /></label>
+    }
     <label
       >Username<input
         name="username"
@@ -29,15 +95,6 @@
         maxlength="64"
         [(ngModel)]="authUsername"
     /></label>
-    <label
-      >Cloudflare Workers API address<input
-        name="apiBaseUrl"
-        type="url"
-        autocomplete="url"
-        required
-        [(ngModel)]="apiBaseUrl"
-      /><small>Enter the deployed Workers URL ending in /api. Current server: https://gather-school-api.gather-school-api.workers.dev/api</small></label
-    >
     <label
       >Password<input
         name="password"
@@ -60,45 +117,11 @@
     <button
       class="auth-switch"
       type="button"
-      (click)="authMode.set(authMode() === 'register' ? 'login' : 'register')"
+      (click)="authMode() === 'register' ? showSignIn() : showRegistration()"
     >
-      {{ authMode() === 'register' ? 'Already have an account? Sign in' : 'First time here? Create the shared account' }}
+      {{ authMode() === 'register' ? 'Already have an account? Sign in' : 'New student? Create an account' }}
     </button>
   </form>
-  } @else {
-  <div class="role-options">
-    @if (auth.role() === 'organizer') {
-    <button
-      class="role-button organizer-choice"
-      type="button"
-      (click)="chooseRole(auth.role()!)"
-    >
-      <span class="role-icon"
-        ><ion-icon name="shield-checkmark-outline"></ion-icon></span
-      ><span
-        ><strong>I'm an organizer</strong
-        ><small>Manage events and attendance</small></span
-      ><ion-icon name="chevron-forward-outline"></ion-icon>
-    </button>
-    } @else {
-    <button
-      class="role-button"
-      type="button"
-      (click)="chooseRole(auth.role()!)"
-    >
-      <span class="role-icon student-icon"
-        ><ion-icon name="person-outline"></ion-icon></span
-      ><span
-        ><strong>I'm a student</strong
-        ><small>{{ state().students.length ? 'View your pass and assigned seat' : 'Available after students are added' }}</small></span
-      ><ion-icon name="chevron-forward-outline"></ion-icon>
-    </button>
-    }
-  </div>
-  <p class="login-footnote">
-    Signed in as {{ auth.username() }} ·
-    <button class="auth-switch" type="button" (click)="signOut()">Sign out</button>
-  </p>
   }
 </div>
 } @else {
@@ -108,22 +131,26 @@
       ><span class="brand-mark small-mark"
         ><img src="/assets/NEUSTPAPAYALOGO.jpg" alt="" /></span
       ><span class="brand-copy"><strong>gather<span class="brand-period">.</span></strong><small>NEUST PAPAYA OFF - CAMPUS</small></span></a
-    ><button
+    >@if (headerGreeting()) {
+    <span class="header-greeting">{{ headerGreeting() }}</span>
+    }<button
       class="network-pill"
       [class.offline-pill]="!isOnline()"
       type="button"
       (click)="offline.toggleSimulation()"
+      [attr.aria-label]="isOnline() ? 'Online. Click to simulate offline mode.' : 'Offline. Click to toggle connection simulation.'"
+      title="Click to toggle offline simulation"
     >
       <i></i>{{ isOnline() ? 'Online' : 'Offline' }}
     </button>
   </header>
-  <main class="screen-content">
+  <main class="screen-content" (touchstart)="capturePullStart($event)" (touchend)="completePullRefresh($event)">
     @if (!activeEvent() && requiresEvent()) {
     <section class="empty-state setup-empty">
       <p class="eyebrow">EVENT SETUP</p>
       <h1>No event yet</h1>
       <p>Create an event before using attendance, seating, reports, or student passes.</p>
-      @if (state().role === 'organizer') {
+      @if (state().role !== 'student') {
       <button class="primary-button full-button" type="button" (click)="createEvent()">
         <ion-icon name="add-outline"></ion-icon> Create event
       </button>
@@ -134,10 +161,10 @@
     <section class="welcome-row">
       <div>
         <p class="eyebrow">
-          {{ state().role === 'organizer' ? 'ORGANIZER DESK' : 'STUDENT PASS' }}
+          {{ state().role === 'super_admin' ? 'ADMIN CONSOLE' : state().role === 'organizer' ? 'ORGANIZER DESK' : 'STUDENT PASS' }}
         </p>
         <h1>
-          {{ state().role === 'organizer' ? 'Your workspace' : 'Hi, ' +
+          {{ state().role !== 'student' ? 'Your workspace' : 'Hi, ' +
           activeStudent().name.split(' ')[0] }}
         </h1>
         <p class="muted">
@@ -145,11 +172,11 @@
         </p>
       </div>
       <span class="avatar"
-        >{{ state().role === 'organizer' ? 'OR' : activeStudent().name.slice(0,
+        >{{ state().role !== 'student' ? 'OR' : activeStudent().name.slice(0,
         1) }}</span
       >
     </section>
-    @if (pendingCount() > 0 || !isOnline()) {
+    @if (state().role === 'super_admin' && (pendingCount() > 0 || !isOnline())) {
     <button class="sync-banner" type="button" (click)="go('settings')">
       <span
         ><ion-icon
@@ -181,6 +208,15 @@
       <b aria-hidden="true">G</b>
     </section>
     @if (state().role === 'organizer') {
+    <div class="action-stack">
+      <button class="primary-button full-button" type="button" (click)="createEvent()">
+        <ion-icon name="add-outline"></ion-icon> Create event
+      </button>
+      <button class="secondary-button full-button" type="button" (click)="go('scan')">
+        <ion-icon name="scan-outline"></ion-icon> Scan attendance
+      </button>
+    </div>
+    } @else if (state().role === 'super_admin') {
     <section class="section-block">
       <div class="section-title">
         <div>
@@ -237,6 +273,12 @@
           <ion-icon name="people-outline"></ion-icon><strong>Students</strong
           ><small>Build your roster</small>
         </button>
+        @if (state().role === 'super_admin') {
+        <button type="button" (click)="go('settings')">
+          <ion-icon name="person-outline"></ion-icon><strong>Manage organizers</strong
+          ><small>Create organizer accounts</small>
+        </button>
+        }
       </div>
     </section>
     } @else {
@@ -268,13 +310,16 @@
           All events ›
         </button>
       </div>
-      <button class="event-row" type="button" (click)="go('history')">
+      <button class="event-row" type="button" (click)="openEvent(event.id)">
         <span class="date-block">{{ formatDate(event.date) }}</span
         ><span
           ><strong>{{ event.name }}</strong
-          ><small>{{ event.venue }}</small></span
+          >          <small>{{ event.venue }}</small>
+          @if (state().role === 'student') {
+          <small class="status-badge">{{ isEventRequired(event) ? 'Required' : 'Normal event' }}</small>
+          }</span
         ><span class="status-badge"
-          >{{ studentStatus(activeStudent().id) }}</span
+          >{{ isEventRequired(event) ? 'Required' : 'Normal event' }}</span
         >
       </button>
     </section>
@@ -300,16 +345,16 @@
     } @else {
     <section class="welcome-row">
       <div>
-        <p class="eyebrow">ORGANIZER DESK</p>
-        <h1>Your workspace</h1>
-        <p class="muted">Nothing has been added yet.</p>
+        <p class="eyebrow">{{ state().role === 'student' ? 'STUDENT PASS' : 'SCHOOL WORKSPACE' }}</p>
+        <h1>{{ state().role === 'student' ? 'Welcome, ' + activeStudent().name : 'Your workspace' }}</h1>
+        <p class="muted">{{ state().role === 'student' ? 'No approved events yet.' : 'Nothing has been added yet.' }}</p>
       </div>
     </section>
     <section class="empty-state setup-empty">
       <p class="eyebrow">GET STARTED</p>
       <h2>Build your event workspace</h2>
       <p>Add your students and create an event. Your records will appear here.</p>
-      @if (state().role === 'organizer') {
+      @if (state().role === 'super_admin') {
       <div class="action-stack">
         <button class="primary-button full-button" type="button" (click)="createEvent()">
           <ion-icon name="add-outline"></ion-icon> Create event
@@ -329,7 +374,7 @@
       <h1>Events</h1>
       <p class="muted">Everything happening at school.</p>
     </div>
-    @if (state().role === 'organizer') {
+    @if (state().role !== 'student') {
     <button
       class="primary-button full-button"
       type="button"
@@ -339,22 +384,172 @@
     </button>
     }
     <div class="event-list">
+      @if (workspaceSync.error(); as error) {
+      <div class="inline-error" role="alert">
+        <span>{{ error }}</span>
+        <button class="secondary-button" type="button" (click)="syncWorkspace()">Retry</button>
+      </div>
+      }
+      @if (state().role === 'super_admin' && pendingEvents().length) {
+      <section class="approval-panel">
+        <p class="eyebrow">EVENT APPROVALS</p>
+        <h2>Pending events</h2>
+        @for (event of pendingEvents(); track event.id) {
+        <article class="approval-row">
+          <div>
+            <strong>{{ event.name }}</strong>
+            <small>{{ formatDate(event.date) }} · {{ event.startTime }} · {{ event.venue }}</small>
+            <span class="status-badge status-pending">Waiting for approval</span>
+          </div>
+          <button class="primary-button" type="button" (click)="approveEvent(event.id)">Approve event</button>
+        </article>
+        }
+      </section>
+      }
+      @if (syncProgress() && state().events.length === 0) {
+      <div class="skeleton-grid" aria-label="Loading events">
+        @for (skeleton of [1, 2, 3]; track skeleton) {
+        <div class="skeleton-card"><span></span><i></i><i></i><b></b></div>
+        }
+      </div>
+      } @else {
       @for (event of state().events; track event.id) {
       <button class="event-card" type="button" (click)="openEvent(event.id)">
-        <span class="calendar-tile">{{ formatDate(event.date) }}</span
-        ><span
-          ><small
-            >{{ event.startTime }} · {{ event.sections.length }} sections</small
-          ><strong>{{ event.name }}</strong
-          ><small>{{ event.venue }}</small></span
-        ><ion-icon name="chevron-forward-outline"></ion-icon>
+        <strong class="event-card-title">{{ event.name }}</strong>
+        <span class="event-card-meta">{{ formatDate(event.date) }} · {{ event.startTime }}–{{ event.endTime }} · {{ event.venue }}</span>
+        @if (state().role === 'student') {
+        <span class="status-badge" [class.status-required]="isEventRequired(event)">{{ isEventRequired(event) ? 'Required' : 'Normal event' }}</span>
+        } @else if (event.approvalStatus === 'pending') {
+        <span class="status-badge status-pending">Pending approval</span>
+        } @else {
+        <span class="status-badge status-approved">Approved</span>
+        }
+        <span class="event-card-action">View event <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon></span>
       </button>
       } @empty {
       <div class="empty-state">
-        No events yet. Create your first event to get started.
+        <h2>No events yet</h2>
+        <p>{{ state().role === 'student' ? 'Approved school events will appear here.' : 'Create the first event to get your calendar started.' }}</p>
+        @if (state().role !== 'student') {
+        <button class="primary-button" type="button" (click)="createEvent()">Create event</button>
+        }
       </div>
       }
+      }
     </div>
+    } @else if (page() === 'announcements') {
+    <div class="page-heading">
+      <p class="eyebrow">SCHOOL UPDATES</p>
+      <h1>Announcements</h1>
+      <p class="muted">Updates from the super admin.</p>
+    </div>
+    @if (state().role === 'super_admin') {
+    <details class="composer-card">
+      <summary class="primary-button">Write announcement</summary>
+      <form class="form-stack" (ngSubmit)="createAnnouncement()">
+        <label>Title<input name="announcementTitle" required maxlength="120" [(ngModel)]="announcementForm.title" /></label>
+        <label>Announcement<textarea name="announcementBody" rows="4" required maxlength="2000" [(ngModel)]="announcementForm.body"></textarea></label>
+        <div class="account-filter-grid announcement-audience-filters">
+          <label>Who should receive this?
+            <select name="announcementAudience" [(ngModel)]="announcementAudience">
+              <option value="all">All students</option>
+              <option value="sections">Selected course/year/section groups</option>
+            </select>
+          </label>
+          @if (announcementAudience !== 'all') {
+          @if (sectionsLoading()) {
+          <p class="muted" role="status">Loading course and section options…</p>
+          } @else {
+          <label>Course
+            <select name="announcementCourse" [(ngModel)]="announcementCourse" (ngModelChange)="announcementCourseChanged()" required>
+              @for (course of availableCourses(); track course) { <option [value]="course">{{ course }}</option> }
+            </select>
+          </label>
+          @if (announcementAudience === 'sections') {
+          <label>Year level
+            <select name="announcementYear" [(ngModel)]="announcementYearLevel" (ngModelChange)="announcementYearChanged()" required>
+              @for (year of announcementYears(); track year) {
+              <option [value]="year">{{ year }}</option>
+              }
+            </select>
+          </label>
+          <div class="target-section-picker">
+            <div class="target-picker-heading">
+              <span>Sections for this group</span>
+              @if (announcementSections().length > 1) {
+              <button class="text-action" type="button" (click)="selectAllAnnouncementSections()">Select all</button>
+              }
+            </div>
+            @for (section of announcementSections(); track section.id) {
+            <label class="section-choice">
+              <input
+                type="checkbox"
+                [checked]="announcementSectionIds.includes(section.id)"
+                (change)="setAnnouncementSection($event, section.id)"
+              />
+              {{ section.yearLevel }} · {{ section.name }}
+            </label>
+            } @empty {
+            <p class="muted">No sections exist for this course/year selection.</p>
+            }
+          </div>
+          <button
+            class="secondary-button full-button"
+            type="button"
+            (click)="addAnnouncementSectionGroup()"
+            [disabled]="announcementSectionIds.length === 0"
+          >
+            Add this audience group
+          </button>
+          @if (selectedAnnouncementSectionIds().length > 0) {
+          <div class="target-group-list">
+            <p class="setting-help">Included sections ({{ selectedAnnouncementSectionIds().length }}). Add another course/year group to combine audiences.</p>
+            @for (sectionId of selectedAnnouncementSectionIds(); track sectionId) {
+            <button class="target-group-chip" type="button" (click)="removeAnnouncementSection(sectionId)">
+              {{ requiredSectionLabel(sectionId) }} <span aria-hidden="true">×</span>
+            </button>
+            }
+          </div>
+          }
+          @if (announcementSections().length === 0) {
+          <p class="muted">Add course sections in Settings → Manage sections first.</p>
+          }
+          }
+          }
+          }
+        </div>
+        @if (sectionError(); as error) {
+        <p class="inline-error" role="alert">{{ error }}</p>
+        <button class="secondary-button" type="button" (click)="loadSections()">Retry loading sections</button>
+        }
+        @if (announcementError(); as error) { <p class="inline-error" role="alert">{{ error }}</p> }
+        <button class="primary-button full-button" type="submit">Publish announcement</button>
+      </form>
+    </details>
+    }
+    @if (workspaceSync.error(); as error) {
+    <div class="inline-error" role="alert"><span>{{ error }}</span><button class="secondary-button" type="button" (click)="syncWorkspace()">Retry</button></div>
+    }
+    @if (syncProgress() && visibleAnnouncements().length === 0) {
+    <div class="skeleton-grid" aria-label="Loading announcements">
+      @for (skeleton of [1, 2]; track skeleton) { <div class="skeleton-card"><span></span><i></i><i></i><i></i></div> }
+    </div>
+    } @else {
+    <div class="announcement-grid">
+    @for (announcement of visibleAnnouncements(); track announcement.id) {
+    <article class="announcement-card">
+      <p class="eyebrow">{{ formatDate(announcement.createdAt.slice(0, 10)) }}</p>
+      <h2>{{ announcement.title }}</h2>
+      @if (state().role === 'super_admin') {
+      <p class="announcement-audience-badge">{{ announcementAudienceLabel(announcement) }}</p>
+      }
+      <p>{{ announcement.body }}</p>
+    </article>
+    } @empty {
+    <div class="empty-state"><h2>No announcements yet</h2><p>School updates from the super admin will appear here.</p></div>
+    }
+    </div>
+    }
     } @else if (page() === 'students') {
     <div class="page-heading">
       <p class="eyebrow">YOUR ROSTER</p>
@@ -403,6 +598,11 @@
     <section class="detail-hero">
       <span>{{ formatDate(activeEvent().date) }}</span>
       <h1>{{ activeEvent().name }}</h1>
+      @if (state().role === 'student') {
+      <span class="status-badge">{{ isEventRequired(activeEvent()) ? 'Required' : 'Normal event' }}</span>
+      } @else if (activeEvent().approvalStatus === 'pending') {
+      <span class="status-badge">Pending super-admin approval</span>
+      }
       <p>{{ activeEvent().description }}</p>
       <div>
         {{ activeEvent().startTime }} – {{ activeEvent().endTime }} · {{
@@ -428,17 +628,18 @@
       <button
         class="primary-button full-button"
         type="button"
-        (click)="go(state().role === 'organizer' ? 'scan' : 'my-qr')"
+        [disabled]="state().role !== 'student' && !canScanActiveEvent()"
+        (click)="go(state().role !== 'student' ? 'scan' : 'my-qr')"
       >
-        {{ state().role === 'organizer' ? 'Scan attendance' : 'Open my student
+        {{ state().role !== 'student' ? (canScanActiveEvent() ? 'Scan attendance' : 'Scanning available after approval') : 'Open my student
         pass' }}</button
-      ><button
+      >@if (state().role === 'super_admin') {<button
         class="secondary-button full-button"
         type="button"
         (click)="go('seating')"
       >
-        View seating map</button
-      >@if (state().role === 'organizer') {
+        View seating map</button>}
+      @if (state().role === 'super_admin') {
       <button
         class="quiet-button full-button"
         type="button"
@@ -449,7 +650,7 @@
       }
     </div>
     } @else if (page() === 'create-event') {
-    <button class="back-link" type="button" (click)="go('event-details')">
+    <button class="back-link" type="button" (click)="go('events')">
       ‹ Cancel
     </button>
     <div class="page-heading">
@@ -508,8 +709,76 @@
           rows="3"
           [(ngModel)]="eventForm.description"
         ></textarea></label
-      ><button class="primary-button full-button" type="submit">
-        Save event
+      >
+      <section class="settings-panel">
+        <p class="eyebrow">REQUIRED ATTENDEES</p>
+        <p class="setting-help">Each group is an exact audience. Choose All years for a whole course, or add separate year/section groups to combine courses and years.</p>
+        @if (sectionsLoading()) {
+        <p class="muted" role="status">Loading course and section options…</p>
+        }
+        <div class="form-pair">
+          <label
+            >Course<select
+              name="requiredCourse"
+              [ngModel]="signupSectionGroup.course"
+              (ngModelChange)="signupSectionGroup.course=$event; eventGroupCourseChanged()"
+            >
+              @for (course of availableCourses(); track course) {
+              <option [value]="course">{{ course }}</option>
+              }
+            </select></label
+          ><label
+            >Year level<select
+              name="requiredYear"
+              [ngModel]="signupSectionGroup.yearLevel"
+              (ngModelChange)="signupSectionGroup.yearLevel=$event; eventGroupYearChanged()"
+              [disabled]="eventGroupYears().length===0"
+            >
+              @for (year of eventGroupYears(); track year) {
+              <option [value]="year">{{ year }}</option>
+              }
+            </select></label
+          >
+        </div>
+        @if (eventGroupSections().length > 1) {
+        <div class="event-section-grid">
+          <button class="text-action" type="button" (click)="selectAllEventGroupSections()">All sections</button>
+          @for (section of eventGroupSections(); track section.id) {
+          <label class="section-choice">
+            <input
+              type="checkbox"
+              [checked]="signupSectionGroup.sectionIds.includes(section.id)"
+              (change)="setEventGroupSection($event, section.id)"
+            />
+            <span>{{ section.yearLevel }} · Section {{ section.name }}</span>
+          </label>
+          }
+        </div>
+        } @else if (eventGroupSections().length === 1) {
+        <p class="muted">{{ eventGroupSections()[0].yearLevel }} · Section {{ eventGroupSections()[0].name }} is selected automatically.</p>
+        } @else {
+        <p class="muted">No sections are configured for this course and year. Add sections in Settings → Manage sections.</p>
+        }
+        <button class="secondary-button full-button" type="button" (click)="addEventSectionGroup()" [disabled]="signupSectionGroup.sectionIds.length===0">
+          Add attendee group
+        </button>
+        <div class="filter-row">
+          @for (sectionId of selectedEventRequiredSections(); track sectionId) {
+          <button type="button" (click)="removeRequiredSection(sectionId)">
+            {{ requiredSectionLabel(sectionId) }} ×
+          </button>
+          }
+        </div>
+        @if (eventError(); as error) {
+        <p class="scan-result rejected" role="alert">{{ error }}</p>
+        }
+        @if (sectionError(); as error) {
+        <p class="scan-result rejected" role="alert">{{ error }}</p>
+        <button class="secondary-button full-button" type="button" (click)="loadSections()">Retry loading sections</button>
+        }
+      </section>
+      <button class="primary-button full-button" type="submit">
+        {{ editingEventId ? 'Save changes' : 'Create event' }}
       </button>
     </form>
     } @else if (page() === 'seating') {
@@ -557,6 +826,7 @@
         <button
           class="sheet-close"
           type="button"
+          aria-label="Close seat details"
           (click)="selectedSeat.set(null)"
         >
           ×
@@ -567,7 +837,7 @@
           {{ seatStudent(seat)?.name ?? 'Available seat' }} · {{
           seatStatus(seat) }}
         </p>
-        @if (state().role === 'organizer' && !recordFor(seat.studentId ??
+        @if (state().role !== 'student' && !recordFor(seat.studentId ??
         '')?.timeIn) {
         <label class="select-label"
           >Assign student<select [(ngModel)]="selectedStudentToAssign">
@@ -617,6 +887,7 @@
     <button
       class="secondary-button full-button"
       type="button"
+      [disabled]="!canScanActiveEvent()"
       (click)="startCamera()"
     >
       Open camera scanner
@@ -633,10 +904,14 @@
     ><button
       class="primary-button full-button"
       type="button"
+      [disabled]="!canScanActiveEvent()"
       (click)="scanStudent(scanStudentId)"
     >
       Simulate scan
     </button>
+    <div class="scan-count" aria-live="polite">
+      <strong>{{ scannedCount() }}</strong><span>students checked in or out</span>
+    </div>
     @if (scanResult(); as result) {
     <section [class]="'scan-result ' + result.tone">
       <strong>{{ result.message }}</strong>@if (result.student) {
@@ -902,6 +1177,7 @@
       <h1>My QR & seat</h1>
       <p class="muted">Have this ready at the event entrance.</p>
     </div>
+    @if (state().role === 'super_admin') {
     <label class="select-label"
       >Student profile<select
         [ngModel]="state().studentId"
@@ -914,263 +1190,348 @@
         }
       </select></label
     >
+    }
     <section class="pass-card">
       <span>GATHER PASS · VALID</span>@if (qrCode()) {
-      <img [src]="qrCode()" alt="Student QR code pass" /> }
+      <img [src]="qrCode()" [alt]="'High contrast attendance QR code for ' + activeStudent().name" /> }
       <h2>{{ activeStudent().name }}</h2>
-      <p>{{ activeStudent().id }} · {{ activeStudent().section }}</p>
+      <p>{{ activeStudent().course ?? 'Course not set' }} · {{ activeStudent().yearLevel ?? 'Year not set' }} · {{ activeStudent().section }}</p>
       <div class="pass-seat">
-        <span>{{ activeEvent().name }}</span
-        ><strong>{{ seatLabel(activeStudent().id) }}</strong>
+        @if (activeEvent(); as event) {
+        <span>{{ event.name }}</span><strong>{{ seatLabel(activeStudent().id) }}</strong>
+        } @else {
+        <span>No approved event yet</span><strong>{{ activeStudent().section }}</strong>
+        }
       </div>
     </section>
-    <button
+    @if (state().role === 'super_admin') {<button
       class="secondary-button full-button"
       type="button"
       (click)="go('history')"
     >
       View attendance history
-    </button>
-    } @else if (page() === 'settings') {
+    </button>}
+    } @else if (page().startsWith('settings')) {
     <div class="page-heading">
-      <p class="eyebrow">PREFERENCES</p>
+      @if (page() === 'settings') {
+      <p class="eyebrow">YOUR ACCOUNT</p>
       <h1>Settings</h1>
-      <p class="muted">Workspace preferences and sync.</p>
-    </div>
-    <section class="settings-panel">
-      <div class="setting-row">
-        <span>{{ isOnline() ? 'ONLINE' : 'OFFLINE MODE' }}</span
-        ><small
-          >{{ isOnline() ? 'Changes sync as you go.' : 'Changes are saved on
-          this device.' }}</small
-        ><button
-          class="toggle-switch"
-          type="button"
-          role="switch"
-          [attr.aria-checked]="!state().simulatedOffline"
-          (click)="offline.toggleSimulation()"
-        >
-          Toggle
-        </button>
-      </div>
-      @if (workspaceSync.error(); as syncError) {
-      <p class="scan-result warning" role="status">{{ syncError }}</p>
+      <p class="muted">Account details and connection status.</p>
+      } @else {
+      <button class="back-link" type="button" (click)="go('settings')">‹ Settings</button>
+      <p class="eyebrow">{{ state().role === 'super_admin' ? 'ADMINISTRATION' : 'YOUR ACCOUNT' }}</p>
+      <h1>
+        @switch (page()) {
+          @case ('settings-accounts') { School accounts }
+          @case ('settings-account-create') { Create organizer }
+          @case ('settings-account-reset') { Reset password }
+          @case ('settings-sections') { Courses & sections }
+          @case ('settings-attendance') { Attendance rules }
+          @case ('settings-app') { Sync status }
+          @case ('settings-advanced') { Advanced settings }
+          @default { Account }
+        }
+      </h1>
+      <p class="muted">Manage this part of your school workspace.</p>
       }
-      <div class="sync-progress" [hidden]="!syncProgress()">
-        <span [style.width.%]="syncProgress() ? 100 : 0"></span>
-      </div>
-      <div class="detail-line">
-        <span>Pending changes</span><strong>{{ workspaceSync.pending() ? 'Yes' : 'No' }}</strong>
-      </div>
-      <button
-        class="primary-button full-button"
-        type="button"
-        [disabled]="!isOnline() || syncProgress()"
-        (click)="syncWorkspace()"
-      >
-        {{ syncProgress() ? 'Syncing…' : 'Sync now' }}
+    </div>
+    @if (state().role === 'super_admin') {
+    @if (page() === 'settings') {
+    <section class="settings-menu-group" aria-labelledby="settings-manage-heading">
+      <h2 id="settings-manage-heading">Manage</h2>
+      <button class="settings-menu-row" type="button" (click)="go('settings-accounts')">
+        <span class="settings-menu-icon"><ion-icon name="people-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>School accounts</strong><small>Create organizers and reset passwords</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="go('settings-sections')">
+        <span class="settings-menu-icon"><ion-icon name="school-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Courses & sections</strong><small>Manage student signup options</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="go('announcements')">
+        <span class="settings-menu-icon"><ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Announcements</strong><small>Publish school updates</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
       </button>
     </section>
+    <section class="settings-menu-group" aria-labelledby="settings-attendance-heading">
+      <h2 id="settings-attendance-heading">Attendance</h2>
+      <button class="settings-menu-row" type="button" (click)="go('settings-attendance')">
+        <span class="settings-menu-icon"><ion-icon name="time-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Attendance rules</strong><small>Set the late-arrival grace period</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+    </section>
+    <section class="settings-menu-group" aria-labelledby="settings-app-heading">
+      <h2 id="settings-app-heading">App</h2>
+      <button class="settings-menu-row" type="button" (click)="go('settings-app')">
+        <span class="settings-menu-icon"><ion-icon name="sync-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Sync status</strong><small>{{ isOnline() ? 'Online' : 'Offline' }} · {{ workspaceSync.pending() ? 'Changes waiting to sync' : 'All changes synced' }}</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="go('settings-advanced')">
+        <span class="settings-menu-icon"><ion-icon name="settings-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Advanced</strong><small>API address and workspace reset</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+    </section>
+    } @else if (page() === 'settings-accounts') {
+    <section class="settings-menu-group">
+      <h2>School accounts</h2>
+      <button class="settings-menu-row" type="button" (click)="go('settings-account-create')">
+        <span class="settings-menu-icon"><ion-icon name="person-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Create organizer account</strong><small>Add a staff sign-in</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="go('settings-account-reset')">
+        <span class="settings-menu-icon"><ion-icon name="shield-checkmark-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Reset account password</strong><small>Choose an account and set a new password</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      @if (accountError(); as error) {
+      <p class="inline-error" role="alert">{{ error }}</p>
+      }
+    </section>
+    } @else if (page() === 'settings-account-create') {
+    <section class="settings-panel">
+      <p class="setting-help">Organizer accounts can create events and scan attendance.</p>
+      <form class="auth-form" (ngSubmit)="createManagedAccount()">
+        <label>Username<input name="accountUsername" autocomplete="username" required minlength="3" maxlength="64" [(ngModel)]="accountForm.username" /></label>
+        <label>Temporary password<input name="accountPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="128" [(ngModel)]="accountForm.password" /></label>
+        <button class="primary-button full-button" type="submit">Create organizer account</button>
+      </form>
+      @if (accountError(); as error) { <p class="inline-error" role="alert">{{ error }}</p> }
+      @if (accountMessage(); as message) { <p class="sync-confirmation" role="status">{{ message }}</p> }
+    </section>
+    } @else if (page() === 'settings-account-reset') {
+    <section class="settings-panel">
+      <p class="setting-help">Filter the account list or search by username, student name, course, year, or section.</p>
+      <div class="account-filter-grid">
+        <label class="account-search">Search accounts
+          <input name="accountSearch" type="search" autocomplete="off" placeholder="Search accounts" [ngModel]="accountSearch()" (ngModelChange)="accountSearch.set($event); accountFiltersChanged()" />
+        </label>
+        <label>Account type
+          <select name="accountRoleFilter" [ngModel]="accountRoleFilter()" (ngModelChange)="accountRoleFilter.set($event); accountFiltersChanged()">
+            <option value="all">All accounts</option>
+            <option value="organizer">Organizers</option>
+            <option value="student">Students</option>
+          </select>
+        </label>
+        @if (accountRoleFilter() === 'student') {
+        <label>Course
+          <select name="accountCourseFilter" [ngModel]="accountCourseFilter()" (ngModelChange)="accountCourseFilter.set($event); accountCourseChanged()">
+            <option value="">All courses</option>
+            @for (course of accountCourses(); track course) { <option [value]="course">{{ course }}</option> }
+          </select>
+        </label>
+        <label>Year level
+          <select name="accountYearFilter" [ngModel]="accountYearFilter()" (ngModelChange)="accountYearFilter.set($event); accountYearChanged()">
+            <option value="">All year levels</option>
+            @for (year of accountYears(); track year) { <option [value]="year">{{ year }}</option> }
+          </select>
+        </label>
+        <label>Section
+          <select name="accountSectionFilter" [ngModel]="accountSectionFilter()" (ngModelChange)="accountSectionFilter.set($event); accountFiltersChanged()">
+            <option value="">All sections</option>
+            @for (section of accountSections(); track section.id) {
+            <option [value]="section.id">{{ section.name }}</option>
+            }
+          </select>
+        </label>
+        }
+      </div>
+      <div class="account-list-heading">
+        <h2>Accounts</h2>
+        <span>{{ filteredManagedAccountList().length }} matches</span>
+      </div>
+      <div class="managed-account-list" aria-label="Accounts to reset">
+        @if (accountsLoading()) {
+        <div class="managed-account-skeleton" role="status" aria-label="Loading accounts">
+          <span></span><span></span><span></span>
+        </div>
+        } @else {
+        @for (account of visibleManagedAccounts(); track account.username) {
+        <div class="managed-account-row" [class.selected]="resetAccountUsername === account.username">
+          <span class="managed-account-avatar" aria-hidden="true">{{ account.role === 'student' ? 'S' : account.role === 'super_admin' ? 'A' : 'O' }}</span>
+          <span class="managed-account-details">
+            <strong>{{ accountName(account) }}</strong>
+            <small>{{ account.username }} · {{ accountSummary(account) }}</small>
+          </span>
+          <button class="account-select-button" type="button" [attr.aria-pressed]="resetAccountUsername === account.username" (click)="selectManagedAccount(account.username)">
+            {{ resetAccountUsername === account.username ? 'Selected' : 'Select' }}
+          </button>
+        </div>
+        } @empty {
+        <p class="empty-state">No accounts match those filters. Try changing the account type or search.</p>
+        }
+        }
+      </div>
+      @if (filteredManagedAccountList().length > visibleManagedAccounts().length) {
+      <button class="secondary-button account-more-button" type="button" (click)="showMoreManagedAccounts()">
+        Show more accounts ({{ filteredManagedAccountList().length - visibleManagedAccounts().length }} remaining)
+      </button>
+      }
+      @if (resetAccountUsername) {
+      <form class="auth-form account-reset-form" (ngSubmit)="resetManagedAccountPassword()">
+        <p class="selected-account-note">New password for <strong>{{ resetAccountUsername }}</strong></p>
+        <label>New password<input name="resetAccountPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="128" [(ngModel)]="resetAccountPassword" /></label>
+        <button class="primary-button full-button" type="submit">Reset password</button>
+      </form>
+      } @else {
+      <p class="account-selection-hint">Select an account to set a new password.</p>
+      }
+      @if (accountError(); as error) {
+      <p class="inline-error" role="alert">{{ error }}</p>
+      @if (managedAccounts().length === 0) {
+      <button class="secondary-button" type="button" (click)="loadManagedAccounts()">Retry loading accounts</button>
+      }
+      }
+      @if (accountMessage(); as message) { <p class="sync-confirmation" role="status">{{ message }}</p> }
+    </section>
+    } @else if (page() === 'settings-sections') {
+    <section class="settings-panel">
+      <p class="setting-help">These sections appear in student signup and event requirements.</p>
+      <form class="form-stack" (ngSubmit)="saveSection()">
+        <label>Course<select name="sectionCourse" required [(ngModel)]="sectionForm.course">
+          @for (course of courses; track course) { <option [value]="course">{{ course }}</option> }
+        </select></label>
+        <label>Year level<select name="sectionYear" required [(ngModel)]="sectionForm.yearLevel">
+          @for (year of yearLevels; track year) { <option [value]="year">{{ year }}</option> }
+        </select></label>
+        <label>Section name<input name="sectionName" required maxlength="32" [(ngModel)]="sectionForm.name" placeholder="A" /></label>
+        <button class="primary-button full-button" type="submit">{{ editingSectionId ? 'Save section' : 'Add section' }}</button>
+      </form>
+      @if (editingSectionId) { <button class="text-action" type="button" (click)="cancelSectionEdit()">Cancel edit</button> }
+      @if (sectionError(); as error) { <p class="inline-error" role="alert">{{ error }}</p> }
+      <div class="event-list">
+        @for (section of schoolSections(); track section.id) {
+        <button class="settings-menu-row" type="button" (click)="editSection(section)">
+          <span><strong>{{ section.course }} · {{ section.yearLevel }} · {{ section.name }}</strong><small>Edit section</small></span>
+          <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+        </button>
+        } @empty { <p class="empty-state">No sections yet. Add the first course and section above.</p> }
+      </div>
+    </section>
+    } @else if (page() === 'settings-attendance') {
     @if (activeEvent(); as event) {
     <section class="settings-panel">
-      <p class="eyebrow">ATTENDANCE RULES</p>
-      <h2>Late arrival grace period</h2>
-      <label class="select-label"
-        >{{ event.name }}<input
-          type="number"
-          min="0"
-          max="120"
-          [ngModel]="event.graceMinutes"
-          (ngModelChange)="updateGracePeriod($event)"
-      /></label>
+      <h2>Late-arrival grace period</h2>
+      <p class="setting-help">Students arriving within this period can be marked late instead of absent.</p>
+      <label class="select-label">{{ event.name }}<input type="number" min="0" max="120" [ngModel]="event.graceMinutes" (ngModelChange)="updateGracePeriod($event)" /></label>
     </section>
     } @else {
-    <div class="empty-state">Create an event to set its attendance rules.</div>
+    <div class="empty-state"><h2>No event to configure</h2><p>Create an event before setting attendance rules.</p><button class="primary-button" type="button" (click)="createEvent()">Create event</button></div>
     }
+    } @else if (page() === 'settings-app') {
     <section class="settings-panel">
-      <p class="eyebrow">SCHOOL ACCOUNTS</p>
-      <h2>Create an account</h2>
-      <p class="setting-help">Create organizer logins or link each student's login to their existing roster record. Share the username and temporary password privately.</p>
-      <form class="auth-form" (ngSubmit)="createManagedAccount()">
-        <label
-          >Account type<select name="accountRole" [(ngModel)]="accountForm.role">
-            <option value="student">Student</option>
-            <option value="organizer">Organizer</option>
-          </select></label
-        >
-        @if (accountForm.role === 'student') {
-        <label
-          >Student roster entry<select
-            name="accountStudent"
-            required
-            [(ngModel)]="accountForm.studentId"
-          >
-            <option value="" disabled>Select a student</option>
-            @for (student of state().students; track student.id) {
-            <option [value]="student.id">{{ student.name }} · {{ student.section }}</option>
-            }
-          </select></label
-        >
-        }
-        <label
-          >Username<input
-            name="accountUsername"
-            autocomplete="off"
-            required
-            minlength="3"
-            maxlength="64"
-            [(ngModel)]="accountForm.username"
-        /></label>
-        <label
-          >Temporary password<input
-            name="accountPassword"
-            type="password"
-            autocomplete="new-password"
-            required
-            minlength="8"
-            maxlength="128"
-            [(ngModel)]="accountForm.password"
-        /></label>
-        <button class="primary-button full-button" type="submit">
-          Create school account
-        </button>
-      </form>
-      <h2>Reset an account password</h2>
-      <form class="auth-form" (ngSubmit)="resetManagedAccountPassword()">
-        <label
-          >School account<select
-            name="resetAccountUsername"
-            required
-            [(ngModel)]="resetAccountUsername"
-          >
-            @for (account of managedAccounts(); track account.username) {
-            <option [value]="account.username">{{ account.username }} · {{ account.role }}</option>
-            }
-          </select></label
-        >
-        <label
-          >New password<input
-            name="resetAccountPassword"
-            type="password"
-            autocomplete="new-password"
-            required
-            minlength="8"
-            maxlength="128"
-            [(ngModel)]="resetAccountPassword"
-        /></label>
-        <button class="secondary-button full-button" type="submit">
-          Reset password
-        </button>
-      </form>
-      @if (accountError(); as error) {
-      <p class="scan-result rejected" role="alert">{{ error }}</p>
-      }
-      @if (accountMessage(); as message) {
-      <p class="sync-confirmation" role="status">{{ message }}</p>
-      }
+      <div class="setting-row"><span class="connection-label"><i [class.offline-dot]="!isOnline()"></i>{{ isOnline() ? 'Online' : 'Offline' }}</span><small>{{ isOnline() ? 'Changes sync with the shared workspace.' : 'Changes are saved on this device.' }}</small></div>
+      <div class="detail-line"><span>Pending changes</span><strong>{{ workspaceSync.pending() ? 'Waiting to sync' : 'All changes synced' }}</strong></div>
+      @if (workspaceSync.error(); as syncError) { <p class="inline-error" role="alert">{{ syncError }}</p> }
+      <button class="primary-button full-button" type="button" [disabled]="!isOnline() || syncProgress()" (click)="syncWorkspace()">{{ syncProgress() ? 'Syncing…' : 'Sync now' }}</button>
     </section>
+    } @else if (page() === 'settings-advanced') {
     <section class="settings-panel">
-      <p class="eyebrow">CLOUDFLARE WORKERS</p>
-      <h2>Hosted API address</h2>
-      <label class="select-label"
-        >Cloudflare Workers URL<input
-          name="settingsApiBaseUrl"
-          type="url"
-          autocomplete="url"
-          required
-          [(ngModel)]="apiBaseUrl"
-      /></label>
-      <small class="setting-help"
-        >Use the deployed Workers URL ending in /api. This address stays the same when the app is restarted.</small
-      >
-      <button
-        class="secondary-button full-button"
-        type="button"
-        (click)="saveApiAddress()"
-      >
-        Save API address
-      </button>
-      @if (apiAddressSaved()) {
-      <p class="sync-confirmation" role="status">API address saved on this device.</p>
-      }
+      <p class="eyebrow">API ADDRESS</p>
+      <label class="select-label">Cloudflare Workers URL<input name="settingsApiBaseUrl" type="url" autocomplete="url" required [(ngModel)]="apiBaseUrl" /></label>
+      <small class="setting-help">Use the deployed Workers URL ending in /api.</small>
+      <button class="secondary-button full-button" type="button" (click)="saveApiAddress()">Save API address</button>
+      @if (apiAddressSaved()) { <p class="sync-confirmation" role="status">API address saved on this device.</p> }
     </section>
-    <section class="settings-panel">
-      <p class="eyebrow">WORKSPACE DATA</p>
+    <section class="settings-panel danger-panel">
+      <p class="eyebrow">DESTRUCTIVE ACTION</p>
       <h2>Clear workspace</h2>
-      <button
-        class="secondary-button full-button"
-        type="button"
-        (click)="resetWorkspace()"
-      >
-        Clear all workspace data
-      </button>
+      <p class="setting-help">This clears students, events, attendance, and messages from this workspace. Type CLEAR to confirm.</p>
+      <label class="select-label">Type CLEAR to confirm<input name="clearWorkspaceConfirmation" autocomplete="off" [(ngModel)]="clearWorkspaceConfirmation" /></label>
+      <button class="danger-button full-button" type="button" [disabled]="clearWorkspaceConfirmation !== 'CLEAR'" (click)="resetWorkspace()">Clear all workspace data</button>
     </section>
-    <button class="sign-out" type="button" (click)="signOut()">Sign out</button>
+    }
+    } @else {
+    <section class="settings-panel">
+      <p class="eyebrow">PROFILE</p>
+      <h2>{{ auth.username() }}</h2>
+      <p class="setting-help">{{ state().role === 'student' ? (activeStudent()?.name ?? 'Student profile') : 'Organizer account' }}</p>
+    </section>
+    <section class="settings-panel">
+      <p class="eyebrow">SYNC STATUS</p>
+      <div class="setting-row"><span class="connection-label"><i [class.offline-dot]="!isOnline()"></i>{{ isOnline() ? 'Online' : 'Offline' }}</span><small>{{ workspaceSync.pending() ? 'Changes are waiting to sync.' : 'Your changes are up to date.' }}</small></div>
+      @if (workspaceSync.error(); as syncError) { <p class="inline-error" role="alert">{{ syncError }}</p> }
+      <button class="secondary-button full-button" type="button" [disabled]="!isOnline() || syncProgress()" (click)="syncWorkspace()">{{ syncProgress() ? 'Syncing…' : 'Sync now' }}</button>
+    </section>
+    }
+    <section class="settings-panel sign-out-panel">
+      <button class="danger-button full-button" type="button" (click)="signOut()">Sign out</button>
+    </section>
     }
   </main>
   <nav class="bottom-tabs" aria-label="Main navigation">
-    <button
-      [class.tab-active]="page() === 'home'"
-      type="button"
-      (click)="go('home')"
-    >
-      <ion-icon name="home-outline"></ion-icon><span>Home</span></button
-    ><button
-      [class.tab-active]="page() === 'events' || page() === 'event-details'"
-      type="button"
-      (click)="go('events')"
-    >
-      <ion-icon name="calendar-outline"></ion-icon><span>Events</span></button
-    >@if (state().role === 'organizer') {
+    @if (state().role === 'student') {
+    <button [class.tab-active]="page() === 'home'" type="button" (click)="go('home')">
+      <ion-icon name="home-outline"></ion-icon><span>Home</span>
+    </button>
+    <button [class.tab-active]="page() === 'events' || page() === 'event-details'" type="button" (click)="go('events')">
+      <ion-icon name="calendar-outline" aria-hidden="true"></ion-icon><span>Events</span>
+    </button>
+    <button [class.tab-active]="page() === 'announcements'" type="button" (click)="go('announcements')">
+      <ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon><span>Updates</span>
+      @if (visibleAnnouncements().length) { <b class="tab-badge">{{ visibleAnnouncements().length }}</b> }
+    </button>
+    <button [class.tab-active]="page() === 'settings'" type="button" (click)="go('settings')">
+      <ion-icon name="settings-outline" aria-hidden="true"></ion-icon><span>Settings</span>
+    </button>
+    } @else if (state().role === 'organizer') {
+    <button [class.tab-active]="page() === 'home'" type="button" (click)="go('home')">
+      <ion-icon name="home-outline" aria-hidden="true"></ion-icon><span>Home</span>
+    </button>
+    <button [class.tab-active]="page() === 'events' || page() === 'event-details'" type="button" (click)="go('events')">
+      <ion-icon name="calendar-outline" aria-hidden="true"></ion-icon><span>Events</span>
+    </button>
     <button
       class="tab-scan"
       [class.tab-active]="page() === 'scan'"
       type="button"
       (click)="go('scan')"
     >
-      <ion-icon name="scan-outline"></ion-icon><span>Scan</span></button
-    ><button
-      [class.tab-active]="page() === 'attendance'"
-      type="button"
-      (click)="go('attendance')"
-    >
-      <ion-icon name="people-outline"></ion-icon><span>Monitor</span></button
-    ><button
-      [class.tab-active]="page() === 'reports'"
-      type="button"
-      (click)="go('reports')"
-    >
-      <ion-icon name="stats-chart-outline"></ion-icon><span>Reports</span>
-    </button>
-    <button
-      [class.tab-active]="page() === 'settings'"
-      type="button"
-      (click)="go('settings')"
-    >
-      <ion-icon name="settings-outline"></ion-icon><span>Settings</span>
+      <ion-icon name="scan-outline" aria-hidden="true"></ion-icon><span>Scan</span></button>
+    <button [class.tab-active]="page() === 'settings'" type="button" (click)="go('settings')">
+      <ion-icon name="settings-outline" aria-hidden="true"></ion-icon><span>Settings</span>
     </button>
     } @else {
+    <button [class.tab-active]="page() === 'home'" type="button" (click)="go('home')">
+      <ion-icon name="home-outline" aria-hidden="true"></ion-icon><span>Home</span>
+    </button>
+    <button [class.tab-active]="page() === 'events' || page() === 'event-details'" type="button" (click)="go('events')">
+      <ion-icon name="calendar-outline" aria-hidden="true"></ion-icon><span>Events</span>
+      @if (pendingEvents().length) { <b class="tab-badge">{{ pendingEvents().length }}</b> }
+    </button>
     <button
-      [class.tab-active]="page() === 'my-qr'"
+      [class.tab-active]="page() === 'scan'"
       type="button"
-      (click)="go('my-qr')"
+      (click)="go('scan')"
     >
-      <ion-icon name="qr-code-outline"></ion-icon><span>My pass</span></button
-    ><button
-      [class.tab-active]="page() === 'history'"
+      <ion-icon name="scan-outline" aria-hidden="true"></ion-icon><span>Scan</span>
+    </button>
+    <button
+      [class.tab-active]="page() === 'announcements'"
       type="button"
-      (click)="go('history')"
+      (click)="go('announcements')"
     >
-      <ion-icon name="checkmark-done-outline"></ion-icon
-      ><span>History</span></button
-    ><button
+      <ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon><span>Updates</span>
+      @if (visibleAnnouncements().length) { <b class="tab-badge">{{ visibleAnnouncements().length }}</b> }
+    </button>
+    <button
       [class.tab-active]="page() === 'settings'"
       type="button"
       (click)="go('settings')"
     >
-      <ion-icon name="settings-outline"></ion-icon><span>Settings</span>
+      <ion-icon name="settings-outline" aria-hidden="true"></ion-icon><span>Settings</span>
     </button>
     }
   </nav>
+  @if (toastMessage(); as message) {
+  <div class="toast-message" role="status" aria-live="polite">
+    <ion-icon name="checkmark-circle-outline" aria-hidden="true"></ion-icon>{{ message }}
+  </div>
+  }
 </div>
 }

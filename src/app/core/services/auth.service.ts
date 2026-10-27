@@ -3,8 +3,10 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { UserRole } from '../models/school-event.models';
 import {
   AuthenticationResponse,
+  StudentRegistration,
   WorkspaceApiService,
 } from './workspace-api.service';
+import { DeviceStateService } from './device-state.service';
 
 const TOKEN_KEY = 'school-event-auth-token-v1';
 const USERNAME_KEY = 'school-event-auth-username-v1';
@@ -14,6 +16,7 @@ const STUDENT_ID_KEY = 'school-event-auth-student-id-v1';
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   private readonly api = inject(WorkspaceApiService);
+  private readonly device = inject(DeviceStateService);
   readonly authenticated = signal(false);
   readonly username = signal('');
   readonly role = signal<UserRole | null>(null);
@@ -32,7 +35,11 @@ export class AuthService {
 
     this.token = token;
     this.username.set(savedUsername);
-    if (savedRole === 'organizer' || savedRole === 'student') {
+    if (
+      savedRole === 'organizer' ||
+      savedRole === 'student' ||
+      savedRole === 'super_admin'
+    ) {
       this.role.set(savedRole);
     }
     this.studentId.set(localStorage.getItem(STUDENT_ID_KEY));
@@ -45,8 +52,14 @@ export class AuthService {
         return;
       }
       if (error instanceof HttpErrorResponse && error.status === 0) {
-        if (this.role()) this.authenticated.set(true);
-        this.offline.set(true);
+        const cached = await this.device.load(savedUsername);
+        if (this.role() && cached) {
+          this.authenticated.set(true);
+          this.offline.set(true);
+        } else {
+          this.signOut();
+          this.error.set('Internet is required for your first login.');
+        }
       } else {
         this.error.set(this.api.errorMessage(error));
       }
@@ -54,15 +67,33 @@ export class AuthService {
   }
 
   async login(username: string, password: string): Promise<void> {
-    await this.authenticate(() => this.api.login(username, password));
+    if (!navigator.onLine && !localStorage.getItem(TOKEN_KEY)) {
+      throw new Error('Internet is required for your first login.');
+    }
+    await this.authenticate(() => this.api.login(username, password), true);
   }
 
-  async register(username: string, password: string): Promise<void> {
-    await this.authenticate(() => this.api.register(username, password));
+  async register(
+    username: string,
+    password: string,
+    student: StudentRegistration,
+  ): Promise<void> {
+    if (!navigator.onLine) {
+      throw new Error('Internet is required to create an account.');
+    }
+    await this.authenticate(
+      () => this.api.register(username, password, student),
+      true,
+      'Internet is required to create an account.',
+    );
   }
 
   getToken(): string {
     return this.token;
+  }
+
+  hasSavedSession(): boolean {
+    return !!localStorage.getItem(TOKEN_KEY);
   }
 
   signOut(): void {
@@ -80,6 +111,8 @@ export class AuthService {
 
   private async authenticate(
     request: () => Promise<AuthenticationResponse>,
+    firstLogin = false,
+    offlineMessage = 'Internet is required for your first login.',
   ): Promise<void> {
     this.busy.set(true);
     this.error.set(null);
@@ -91,7 +124,13 @@ export class AuthService {
       localStorage.setItem(USERNAME_KEY, result.username);
       this.setIdentity(result);
     } catch (error) {
-      this.error.set(this.api.errorMessage(error));
+      const message =
+        firstLogin &&
+        error instanceof HttpErrorResponse &&
+        error.status === 0
+          ? offlineMessage
+          : this.api.errorMessage(error);
+      this.error.set(message);
       throw error;
     } finally {
       this.busy.set(false);

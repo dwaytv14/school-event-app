@@ -38,21 +38,35 @@ The recommended shared setup uses **Cloudflare Workers + D1**. The Worker hosts 
 
 ### Hosted Cloudflare setup
 
-The production Worker and D1 database are provisioned and migrated. The Worker URL is `https://gather-school-api.gather-school-api.workers.dev`, and production app builds use `https://gather-school-api.gather-school-api.workers.dev/api` by default. Check `https://gather-school-api.gather-school-api.workers.dev/api/health` for `{"status":"ok"}` before sign-in. The signing secret is stored as a Cloudflare Worker secret and must not be committed.
+The Worker URL is `https://gather-school-api.gather-school-api.workers.dev`, and production app builds use `https://gather-school-api.gather-school-api.workers.dev/api` by default. Check `https://gather-school-api.gather-school-api.workers.dev/api/health` for `{"status":"ok"}` before sign-in. The signing secret is stored as a Cloudflare Worker secret and must not be committed.
 
-To deploy code updates later, sign in with Wrangler and run `npm --prefix cloudflare-api run deploy -- --config wrangler.toml`. Apply any new migration with `npx wrangler d1 migrations apply gather-school-data --remote --config cloudflare-api/wrangler.toml`. Do not run `db:create` for this deployment; that command creates a different empty database.
+To apply the role, section, and approval changes to the hosted service, install the Worker dependencies, sign in with Wrangler, apply migrations, then deploy:
 
-The first organizer account registered creates the school workspace. Registration is then closed to the public. Organizers add student roster entries, sync them, and use Settings → School accounts to create linked student accounts or additional organizer accounts, and to reset passwords. Each student account can read only its own student pass and attendance; only organizers can change shared workspace data. To create a student login, first save and sync that student's roster record so the account can be securely linked to it.
+```powershell
+npm --prefix cloudflare-api install
+npx wrangler d1 migrations apply gather-school-data --remote --config cloudflare-api/wrangler.toml
+npm --prefix cloudflare-api run deploy -- --config wrangler.toml
+```
 
-Workspace changes are cached locally first (SQLite on Android/iOS, local storage in browsers) and sync to D1 while online. Multiple organizer devices share the same school workspace. Students sign in with the username/password their organizer created. Password resets are handled by an organizer; there are no email addresses or email-based resets in this username/password setup.
+Seed the super-admin account once after applying the migration. The username is `PPY-ADMIN`; the seed script reads the password from `SUPER_ADMIN_PASSWORD` rather than putting it in the app or repository:
 
-The deployed D1 database starts empty. On the first organizer device, existing locally cached workspace data is automatically merged into the new empty shared workspace during sync. Data that exists only in the old MySQL server and is not present in a device cache is not automatically copied; old server accounts also need to be recreated.
+```powershell
+$env:SUPER_ADMIN_PASSWORD = '<the initial password>'
+npm --prefix cloudflare-api run db:seed:super-admin
+Remove-Item Env:SUPER_ADMIN_PASSWORD
+```
 
-To run the Worker locally after setup, create `cloudflare-api/.dev.vars` with a private `JWT_SECRET` of at least 32 characters, then use `npm run db:migrate:local` and `npm run start:api` from the repository root. The local API address is `http://localhost:8787/api`. Local D1 data is separate from the deployed Cloudflare database. Do not commit `.dev.vars`.
+Sign in as the super admin and add the course/year/section combinations under Settings before students register. Student signup is public and immediate: it creates a linked student profile and account on the server, and requires internet. New users select their course, year, and section and provide a Philippine mobile number. Super admins create organizer accounts and approve organizer-created events. Students receive only approved events, announcements, and their own QR pass. Organizer accounts are limited to scanning attendance at approved events and creating events, which remain pending until approved.
+
+Workspace data is cached on each device (SQLite on Android/iOS; local storage in browser previews) and syncs to D1 when connectivity is available. After a successful first online sign-in, users can continue with the last saved workspace offline; changes sync after reconnecting. The installed APK connects directly to the hosted Worker and does not depend on `npm start` or a server running on the developer's computer.
+
+Do not run `db:create` for this deployment; that command creates a different empty database. Data that exists only in the old MySQL server is not copied automatically; old accounts may need to be recreated.
+
+`npm start` and development builds use the hosted Worker by default, so browser sessions share the same accounts and data as the deployed app. To run the Worker locally after setup, create `cloudflare-api/.dev.vars` with a private `JWT_SECRET` of at least 32 characters, then use `npm run db:migrate:local` and `npm run start:api` from the repository root. In the app, sign in to the hosted service and change the API address under Settings to `http://localhost:8787/api` to use the local Worker. Local D1 data is separate from the deployed Cloudflare database. Do not commit `.dev.vars`.
 
 ### Update the Android app
 
-Changes made in the project do not update an already installed APK automatically. Rebuild and reinstall the Android app after changing the scanner or Settings UI:
+Changes made in the project do not update an already installed APK automatically. After the Worker migration and deployment, rebuild and reinstall the Android app:
 
 ```powershell
 npm run build
@@ -61,22 +75,21 @@ cd android
 .\gradlew.bat assembleDebug
 ```
 
-Use JDK 17 or newer for the Android build. The APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk`. Production builds already use the deployed Cloudflare Workers API address; the API editor in the bottom **Settings** tab is available if the service URL changes. On Android, grant the app camera permission in the system prompt; the scanner requests live video through the Android WebView camera API.
+Use JDK 17 or newer for the Android build. The APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk`. Production builds use the deployed Cloudflare Workers API address. On Android, grant the app camera permission in the system prompt; the scanner requests live video through the Android WebView camera API.
 
-Organizer accounts in the same school see the shared roster, events, and attendance. Student accounts are linked to one roster entry and cannot write organizer data. Passwords are hashed by the API; never put signing secrets or database credentials in the Angular app.
+The API derives each user's role from their account; the sign-in page has no role selector. Passwords are hashed by the API; never put signing secrets or database credentials in the Angular app.
 
-After a successful sign-in, changes are saved locally first (SQLite on Android/iOS) and uploaded when the connection is available. Organizer devices check for remote updates every 15 seconds while the app is visible; Settings → Sync now can also pull updates immediately. Offline mode requires a prior successful sign-in on that device. Browser preview uses local storage instead of the native SQLite plugin.
+After a successful sign-in, changes are saved locally first (SQLite on Android/iOS) and uploaded when the connection is available. Signed-in devices check for remote updates every 15 seconds while the app is visible. Offline mode requires a prior successful online sign-in on that device. Browser preview uses local storage instead of the native SQLite plugin.
 
-The app creates no sample students, sections, or events. Add students from Home → Students and create events from Home → Create event. Sections and event seats are generated from the entries you provide. Logged-in devices cache the full workspace in on-device SQLite and sync it through the Cloudflare Worker API to D1. Browser preview uses `localStorage` as its offline cache. SMS messages are stored locally with the workspace and included in sync. Existing SMS records are migrated on first launch. Settings → Clear all workspace data clears the local and shared workspace.
+The app creates no sample sections, students, events, or announcements. Students register themselves. Organizers and super admins can create events with one or more required section groups; organizers' events stay pending until approval. Announcements are published by the super admin. Logged-in devices cache the workspace in on-device SQLite and sync it through the Cloudflare Worker API to D1. Browser preview uses `localStorage` as its offline cache. SMS messages are stored locally with the workspace and included in sync. Existing SMS records are migrated on first launch.
 
 ## Organizer workflow
 
-1. **Roster and event setup:** choose Organizer, add students with their sections and mobile numbers, then create an event.
-2. **QR attendance:** choose Scan. Use Open camera scanner where camera permission is available, or choose a student and tap Simulate scan. Repeat a valid scan for time-out.
-3. **Seating enforcement:** open Seat map, tap seats for student details, inspect available/assigned/checked-in/violation states, and review the event violation log.
-4. **Live monitoring:** open Monitor, search by name/section, and filter Present, Late, Incomplete, or Absent. Scan in and out to update the record and duration.
-5. **Section reporting:** open Reports, tap a section to expand its student list, and use Export CSV to download a summary.
-6. **SMS and offline sync:** open SMS outbox → Compose SMS, choose all students, a section, or one student, select a reminder/schedule/cancellation/attendance template, and send. Toggle the Online pill or Settings switch to simulate offline, scan or send again, then switch online and use Sync now. Student role includes the generated QR pass, seat assignment, events, and attendance history.
+1. **School setup:** sign in as `PPY-ADMIN`, configure sections in Settings, and create organizer accounts.
+2. **Student registration:** students sign up online with their name, course, year, section, Philippine mobile number, username, and password. Their QR pass is generated from the linked profile.
+3. **Event setup and approval:** organizers or the super admin create events and select required section groups. Organizer-created events remain pending until approved by the super admin.
+4. **QR attendance:** organizers scan student passes for approved events. Attendance and changes sync when the device is online.
+5. **Announcements and offline access:** the super admin publishes announcements for the school. Previously signed-in users can view their cached workspace offline; pending local changes sync after reconnecting.
 
 ## Prototype limitations
 

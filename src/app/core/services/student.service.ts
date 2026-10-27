@@ -12,6 +12,9 @@ export class StudentService {
       name: input.name.trim(),
       section: input.section.trim(),
       mobile: input.mobile.trim(),
+      course: input.course,
+      yearLevel: input.yearLevel,
+      sectionId: input.sectionId,
     };
 
     this.store.update((state) => {

@@ -15,6 +15,7 @@ function createEmptyState(): AppState {
     violations: [],
     messages: [],
     syncItems: [],
+    announcements: [],
   };
 }
 
@@ -60,7 +61,19 @@ export class DemoStoreService {
   private load(): AppState {
     try {
       const saved = localStorage.getItem(this.storageKey);
-      if (saved) return JSON.parse(saved) as AppState;
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<AppState>;
+        return {
+          ...createEmptyState(),
+          ...parsed,
+          announcements: parsed.announcements ?? [],
+          events: (parsed.events ?? []).map((event) => ({
+            ...event,
+            requiredSections: event.requiredSections ?? [],
+            approvalStatus: event.approvalStatus ?? 'approved',
+          })),
+        };
+      }
     } catch {
       // Fall back to an empty workspace if saved data is unreadable.
     }

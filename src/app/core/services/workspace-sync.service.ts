@@ -123,11 +123,14 @@ export class WorkspaceSyncService {
       this.pending.set(
         !switchedAccount && this.hasLocalWorkspaceData(this.store.state()),
       );
-      await this.saveCache(this.store.state(), this.pending());
     }
     localStorage.setItem(ACTIVE_WORKSPACE_KEY, username);
 
     if (!this.canSync()) {
+      if (!cached) {
+        throw new Error('Internet is required for your first login.');
+      }
+      await this.saveCache(this.store.state(), this.pending());
       this.error.set('Offline mode: changes are saved on this device and will sync when online.');
       return;
     }
@@ -137,12 +140,14 @@ export class WorkspaceSyncService {
       await this.persistQueue;
       const remote = await this.api.loadWorkspace(this.auth.getToken());
       const local = this.currentSnapshot(this.revision);
-      if (
-        this.auth.role() === 'organizer' &&
-        (this.pending() ||
-          (this.isEmptyWorkspace(remote) &&
-            this.hasLocalWorkspaceData(this.store.state())))
-      ) {
+      const role = this.auth.role();
+      const shouldPushLocalChanges =
+        (role === 'super_admin' && this.pending()) ||
+        (role === 'organizer' &&
+          (this.pending() ||
+            (this.isEmptyWorkspace(remote) &&
+              this.hasLocalWorkspaceData(this.store.state()))));
+      if (shouldPushLocalChanges) {
         await this.pushWithConflictResolution(
           this.resetPending ? local : this.mergeSnapshots(remote, local),
           remote.revision,
@@ -175,12 +180,14 @@ export class WorkspaceSyncService {
       await this.persistQueue;
       const remote = await this.api.loadWorkspace(this.auth.getToken());
       const local = this.currentSnapshot(this.revision);
-      if (
-        this.auth.role() === 'organizer' &&
-        (this.pending() ||
-          (this.isEmptyWorkspace(remote) &&
-            this.hasLocalWorkspaceData(this.store.state())))
-      ) {
+      const role = this.auth.role();
+      const shouldPushLocalChanges =
+        (role === 'super_admin' && this.pending()) ||
+        (role === 'organizer' &&
+          (this.pending() ||
+            (this.isEmptyWorkspace(remote) &&
+              this.hasLocalWorkspaceData(this.store.state()))));
+      if (shouldPushLocalChanges) {
         await this.pushWithConflictResolution(
           this.resetPending ? local : this.mergeSnapshots(remote, local),
           remote.revision,
@@ -280,7 +287,13 @@ export class WorkspaceSyncService {
     const state: AppState = {
       ...this.store.state(),
       ...snapshot.state,
+      events: snapshot.state.events.map((event) => ({
+        ...event,
+        requiredSections: event.requiredSections ?? [],
+        approvalStatus: event.approvalStatus ?? 'approved',
+      })),
       messages: [],
+      announcements: snapshot.state.announcements ?? [],
     };
     this.store.replace(state, false);
     await this.sms.replaceFromSync(snapshot.state.messages);
@@ -326,11 +339,16 @@ export class WorkspaceSyncService {
     remote: WorkspaceSnapshot,
     local: WorkspaceSnapshot,
   ): WorkspaceSnapshot {
+    const organizer = this.auth.role() === 'organizer';
     return {
       revision: remote.revision,
       state: {
-        students: this.mergeById(remote.state.students, local.state.students),
-        events: this.mergeById(remote.state.events, local.state.events),
+        students: organizer
+          ? this.preferRemoteById(remote.state.students, local.state.students)
+          : this.mergeById(remote.state.students, local.state.students),
+        events: organizer
+          ? this.preferRemoteById(remote.state.events, local.state.events)
+          : this.mergeById(remote.state.events, local.state.events),
         attendance: this.mergeById(
           remote.state.attendance,
           local.state.attendance,
@@ -347,8 +365,25 @@ export class WorkspaceSyncService {
           remote.state.syncItems,
           local.state.syncItems,
         ),
+        announcements: organizer
+          ? this.preferRemoteById(
+              remote.state.announcements ?? [],
+              local.state.announcements ?? [],
+            )
+          : this.mergeById(
+              remote.state.announcements ?? [],
+              local.state.announcements ?? [],
+            ),
       },
     };
+  }
+
+  private preferRemoteById<T extends { id: string }>(
+    remote: T[],
+    local: T[],
+  ): T[] {
+    const remoteIds = new Set(remote.map((item) => item.id));
+    return [...remote, ...local.filter((item) => !remoteIds.has(item.id))];
   }
 
   private mergeById<T extends { id: string }>(remote: T[], local: T[]): T[] {

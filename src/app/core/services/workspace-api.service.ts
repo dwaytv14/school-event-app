@@ -10,7 +10,13 @@ export interface WorkspaceSnapshot {
   revision: number;
   state: Pick<
     AppState,
-    'students' | 'events' | 'attendance' | 'violations' | 'messages' | 'syncItems'
+    | 'students'
+    | 'events'
+    | 'attendance'
+    | 'violations'
+    | 'messages'
+    | 'syncItems'
+    | 'announcements'
   >;
 }
 
@@ -26,6 +32,21 @@ export interface WorkspaceAccount {
   role: UserRole;
   studentId: string | null;
   createdAt: string;
+}
+
+export interface SchoolSection {
+  id: string;
+  course: string;
+  yearLevel: string;
+  name: string;
+}
+
+export interface StudentRegistration {
+  name: string;
+  course: string;
+  yearLevel: string;
+  sectionId: string;
+  mobile: string;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -46,11 +67,16 @@ export class WorkspaceApiService {
     localStorage.setItem(API_URL_STORAGE_KEY, baseUrl);
   }
 
-  register(username: string, password: string): Promise<AuthenticationResponse> {
+  register(
+    username: string,
+    password: string,
+    student: StudentRegistration,
+  ): Promise<AuthenticationResponse> {
     return firstValueFrom(
       this.http.post<AuthenticationResponse>(`${this.baseUrl()}/auth/register`, {
         username,
         password,
+        ...student,
       }),
     );
   }
@@ -112,13 +138,44 @@ export class WorkspaceApiService {
     );
   }
 
+  listSections(token?: string): Promise<{ sections: SchoolSection[] }> {
+    return firstValueFrom(
+      this.http.get<{ sections: SchoolSection[] }>(`${this.baseUrl()}/sections`, {
+        headers: token ? this.authorization(token) : undefined,
+      }),
+    );
+  }
+
+  createSection(
+    token: string,
+    section: Omit<SchoolSection, 'id'>,
+  ): Promise<SchoolSection> {
+    return firstValueFrom(
+      this.http.post<SchoolSection>(`${this.baseUrl()}/sections`, section, {
+        headers: this.authorization(token),
+      }),
+    );
+  }
+
+  updateSection(
+    token: string,
+    id: string,
+    section: Omit<SchoolSection, 'id'>,
+  ): Promise<SchoolSection> {
+    return firstValueFrom(
+      this.http.put<SchoolSection>(
+        `${this.baseUrl()}/sections/${encodeURIComponent(id)}`,
+        section,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
   createAccount(
     token: string,
     account: {
       username: string;
       password: string;
-      role: UserRole;
-      studentId: string | null;
     },
   ): Promise<Omit<WorkspaceAccount, 'createdAt'>> {
     return firstValueFrom(

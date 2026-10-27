@@ -1,4 +1,4 @@
-export type UserRole = 'organizer' | 'student';
+export type UserRole = 'student' | 'organizer' | 'super_admin';
 export type AttendanceStatus = 'Present' | 'Late' | 'Incomplete' | 'Absent';
 export type SyncStatus = 'Pending sync' | 'Synced';
 
@@ -7,6 +7,9 @@ export interface Student {
   name: string;
   section: string;
   mobile: string;
+  course?: string;
+  yearLevel?: string;
+  sectionId?: string;
 }
 
 export interface Seat {
@@ -28,6 +31,9 @@ export interface Event {
   graceMinutes: number;
   sections: string[];
   seats: Seat[];
+  requiredSections?: string[];
+  approvalStatus?: 'pending' | 'approved';
+  createdBy?: string;
 }
 
 export type SchoolEvent = Event;
@@ -54,6 +60,7 @@ export interface SeatingViolation {
 
 export interface SmsMessage {
   id: string;
+  eventId?: string;
   recipientName: string;
   recipientNumber: string;
   text: string;
@@ -69,6 +76,19 @@ export interface SyncItem {
   status: SyncStatus;
 }
 
+export interface Announcement {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  audience?: AnnouncementAudience;
+}
+
+export type AnnouncementAudience =
+  | { type: 'all' }
+  | { type: 'course'; course: string }
+  | { type: 'sections'; sectionIds: string[] };
+
 export interface AppState {
   role: UserRole | null;
   studentId: string;
@@ -80,4 +100,5 @@ export interface AppState {
   violations: SeatingViolation[];
   messages: SmsMessage[];
   syncItems: SyncItem[];
+  announcements: Announcement[];
 }

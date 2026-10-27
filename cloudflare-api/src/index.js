@@ -5,7 +5,10 @@ const WORKSPACE_KEYS = [
   'violations',
   'messages',
   'syncItems',
+  'announcements',
 ];
+const COURSES = ['BSIT', 'BSBA', 'BSED', 'BEED'];
+const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
 const PASSWORD_HASH_ITERATIONS = 100_000;
 
 function json(data, status = 200, headers = {}) {
@@ -239,9 +242,64 @@ async function requireUser(request, env) {
   return { user: row };
 }
 
-async function registerFirstOrganizer(body, env) {
+function normalizedMobile(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (/^09\d{9}$/.test(trimmed)) return `+63${trimmed.slice(1)}`;
+  if (/^\+639\d{9}$/.test(trimmed)) return trimmed;
+  return null;
+}
+
+function sectionLabel(course, yearLevel, sectionName) {
+  return `${course} ${yearLevel} ${sectionName}`;
+}
+
+function addStudentToEvent(event, student) {
+  if (!(event.requiredSections ?? []).includes(student.sectionId)) return;
+  if (!Array.isArray(event.sections)) event.sections = [];
+  if (!event.sections.includes(student.section)) event.sections.push(student.section);
+  if (!Array.isArray(event.seats)) event.seats = [];
+  if (event.seats.some((seat) => seat.studentId === student.id)) return;
+
+  const sectionSeats = event.seats.filter(
+    (seat) => seat.section === student.section,
+  );
+  const availableSeat = sectionSeats.find((seat) => !seat.studentId);
+  if (availableSeat) {
+    availableSeat.studentId = student.id;
+    return;
+  }
+  const sectionSlug = student.section.replaceAll(' ', '-').toLowerCase();
+  if (sectionSeats.length === 0) {
+    event.seats.push(
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `${event.id}-${sectionSlug}-${index + 1}`,
+        section: student.section,
+        row: Math.floor(index / 6) + 1,
+        number: (index % 6) + 1,
+        studentId: index === 0 ? student.id : null,
+      })),
+    );
+    return;
+  }
+  const seatCount = sectionSeats.length;
+  event.seats.push({
+    id: `${event.id}-${sectionSlug}-${seatCount + 1}`,
+    section: student.section,
+    row: Math.floor(seatCount / 6) + 1,
+    number: (seatCount % 6) + 1,
+    studentId: student.id,
+  });
+}
+
+async function registerStudent(body, env) {
   const username = typeof body?.username === 'string' ? body.username.trim() : '';
   const password = body?.password;
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const course = typeof body?.course === 'string' ? body.course : '';
+  const yearLevel = typeof body?.yearLevel === 'string' ? body.yearLevel : '';
+  const sectionId = typeof body?.sectionId === 'string' ? body.sectionId : '';
+  const mobile = normalizedMobile(body?.mobile);
   if (!validUsername(username)) {
     return json(
       { error: 'Username must be 3–64 characters: letters, numbers, dots, dashes, or underscores.' },
@@ -251,52 +309,112 @@ async function registerFirstOrganizer(body, env) {
   if (!validPassword(password)) {
     return json({ error: 'Password must be 8–128 characters.' }, 400);
   }
+  if (!name || name.length > 120) {
+    return json({ error: 'Enter a full name of up to 120 characters.' }, 400);
+  }
+  if (!COURSES.includes(course) || !YEAR_LEVELS.includes(yearLevel) || !sectionId) {
+    return json({ error: 'Select a course, year level, and section.' }, 400);
+  }
+  if (!mobile) {
+    return json({ error: 'Enter a valid Philippine mobile number, such as 09XXXXXXXXX.' }, 400);
+  }
 
+  const organization = await env.DB.prepare(
+    'SELECT id FROM organizations ORDER BY created_at LIMIT 1',
+  ).first();
+  if (!organization) {
+    return json({ error: 'The school is not set up yet. Ask the super admin to initialize it.' }, 503);
+  }
+  const section = await env.DB.prepare(
+    `SELECT id, course, year_level, name FROM sections
+     WHERE id = ? AND organization_id = ?`,
+  )
+    .bind(sectionId, organization.id)
+    .first();
+  if (
+    !section ||
+    section.course !== course ||
+    section.year_level !== yearLevel
+  ) {
+    return json({ error: 'Choose a section that belongs to the selected course and year.' }, 400);
+  }
   const userId = crypto.randomUUID();
-  const organizationId = crypto.randomUUID();
+  const studentId = crypto.randomUUID();
   const now = new Date().toISOString();
   const passwordHash = await hashPassword(password);
+  const student = {
+    id: studentId,
+    name,
+    course,
+    yearLevel,
+    sectionId,
+    section: sectionLabel(course, yearLevel, section.name),
+    mobile,
+  };
+  let inserted = false;
   try {
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO organizations (id, name, created_at)
-         SELECT ?, 'School workspace', ?
-         WHERE (SELECT value FROM app_metadata WHERE key = 'bootstrap_complete') = '0'`,
-      ).bind(organizationId, now),
-      env.DB.prepare(
-        `INSERT INTO users
-          (id, organization_id, username, password_hash, role, student_id, created_at)
-         SELECT ?, ?, ?, ?, 'organizer', NULL, ?
-         WHERE (SELECT value FROM app_metadata WHERE key = 'bootstrap_complete') = '0'`,
-      ).bind(userId, organizationId, username, passwordHash, now),
-      env.DB.prepare(
-        `INSERT INTO workspace_state (organization_id, revision, state_json, updated_at)
-         SELECT ?, 0, ?, ?
-         WHERE (SELECT value FROM app_metadata WHERE key = 'bootstrap_complete') = '0'`,
-      ).bind(organizationId, JSON.stringify(emptyWorkspace()), now),
-      env.DB.prepare(
-        `UPDATE app_metadata SET value = '1'
-         WHERE key = 'bootstrap_complete' AND value = '0'`,
-      ),
-    ]);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const workspace = await env.DB.prepare(
+        'SELECT revision, state_json FROM workspace_state WHERE organization_id = ?',
+      )
+        .bind(organization.id)
+        .first();
+      if (!workspace) return json({ error: 'The school workspace was not found.' }, 503);
+      let state;
+      try {
+        state = JSON.parse(workspace.state_json);
+      } catch {
+        return json({ error: 'The saved school workspace is invalid.' }, 500);
+      }
+      if (!Array.isArray(state.students) || !Array.isArray(state.events)) {
+        return json({ error: 'The saved school workspace is invalid.' }, 500);
+      }
+      state.announcements ??= [];
+      state.students.push(student);
+      state.events.forEach((event) => addStudentToEvent(event, student));
+      const results = await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE workspace_state
+           SET revision = revision + 1, state_json = ?, updated_at = ?
+           WHERE organization_id = ? AND revision = ?`,
+        ).bind(
+          JSON.stringify(state),
+          now,
+          organization.id,
+          workspace.revision,
+        ),
+        env.DB.prepare(
+          `INSERT INTO users
+            (id, organization_id, username, password_hash, role, student_id, created_at)
+           SELECT ?, ?, ?, ?, 'student', ?, ?
+           WHERE changes() = 1`,
+        ).bind(userId, organization.id, username, passwordHash, studentId, now),
+      ]);
+      if (results[0]?.meta?.changes === 1) {
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) {
+      return json({ error: 'The workspace changed during signup. Please try again.' }, 409);
+    }
   } catch (error) {
     if (error?.message?.includes('UNIQUE constraint failed: users.username')) {
       return json({ error: 'That username is already registered.' }, 409);
     }
-    console.error('Organizer bootstrap failed:', error);
-    return json({ error: 'The first organizer account could not be created.' }, 500);
+    if (error?.message?.includes('users.organization_id, users.student_id')) {
+      return json({ error: 'A student account already exists for this profile.' }, 409);
+    }
+    console.error('Student registration failed:', error);
+    return json({ error: 'The student account and profile could not be created.' }, 500);
   }
-
   const user = await env.DB.prepare(
     'SELECT id, username, organization_id, role, student_id, auth_version FROM users WHERE id = ?',
   )
     .bind(userId)
     .first();
   if (!user) {
-    return json(
-      { error: 'The school workspace has already been set up. Ask an organizer to create your account.' },
-      403,
-    );
+    return json({ error: 'The new student account could not be loaded.' }, 500);
   }
   return json(
     { token: await issueToken(user, env.JWT_SECRET), ...authUser(user) },
@@ -336,62 +454,29 @@ async function listAccounts(user, env) {
 }
 
 async function createAccount(request, user, env) {
-  if (user.role !== 'organizer') {
-    return json({ error: 'Only organizers can manage accounts.' }, 403);
+  if (user.role !== 'super_admin') {
+    return json({ error: 'Only the super admin can create organizer accounts.' }, 403);
   }
   const body = await readJson(request);
   const username = typeof body?.username === 'string' ? body.username.trim() : '';
   const password = body?.password;
-  const role = body?.role;
-  const studentId = typeof body?.studentId === 'string' ? body.studentId.trim() : '';
   if (!validUsername(username)) {
     return json({ error: 'Enter a username using 3–64 letters, numbers, dots, dashes, or underscores.' }, 400);
   }
   if (!validPassword(password)) {
     return json({ error: 'Password must be 8–128 characters.' }, 400);
   }
-  if (!['organizer', 'student'].includes(role)) {
-    return json({ error: 'Choose organizer or student as the account role.' }, 400);
-  }
-  if (role === 'student' && !studentId) {
-    return json({ error: 'Select the roster student linked to this account.' }, 400);
-  }
-  if (role === 'organizer' && studentId) {
-    return json({ error: 'Organizer accounts cannot be linked to a student record.' }, 400);
-  }
-
-  const workspace = await env.DB.prepare(
-    'SELECT state_json FROM workspace_state WHERE organization_id = ?',
-  )
-    .bind(user.organization_id)
-    .first();
-  if (!workspace) return json({ error: 'The school workspace was not found.' }, 404);
-  if (role === 'student') {
-    let state;
-    try {
-      state = JSON.parse(workspace.state_json);
-    } catch {
-      return json({ error: 'The saved school workspace is invalid.' }, 500);
-    }
-    if (!state.students?.some((student) => student.id === studentId)) {
-      return json({ error: 'Add this student to the roster and sync before creating an account.' }, 400);
-    }
-  }
-
-  const id = crypto.randomUUID();
   try {
     await env.DB.prepare(
       `INSERT INTO users
         (id, organization_id, username, password_hash, role, student_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'organizer', NULL, ?)`,
     )
       .bind(
-        id,
+        crypto.randomUUID(),
         user.organization_id,
         username,
         await hashPassword(password),
-        role,
-        role === 'student' ? studentId : null,
         new Date().toISOString(),
       )
       .run();
@@ -399,18 +484,15 @@ async function createAccount(request, user, env) {
     if (error?.message?.includes('UNIQUE constraint failed: users.username')) {
       return json({ error: 'That username is already registered.' }, 409);
     }
-    if (error?.message?.includes('users.organization_id, users.student_id')) {
-      return json({ error: 'A login account is already linked to this student.' }, 409);
-    }
     console.error('Account creation failed:', error);
     return json({ error: 'The account could not be created.' }, 500);
   }
-  return json({ username, role, studentId: role === 'student' ? studentId : null }, 201);
+  return json({ username, role: 'organizer', studentId: null }, 201);
 }
 
 async function resetAccountPassword(request, user, env, username) {
-  if (user.role !== 'organizer') {
-    return json({ error: 'Only organizers can reset account passwords.' }, 403);
+  if (user.role !== 'super_admin') {
+    return json({ error: 'Only the super admin can reset account passwords.' }, 403);
   }
   const body = await readJson(request);
   if (!validPassword(body?.password)) {
@@ -434,18 +516,160 @@ function studentWorkspace(state, studentId) {
   return {
     students: [student],
     events: state.events
-      .filter((event) => Array.isArray(event.sections) && event.sections.includes(student.section))
+      .filter((event) => event.approvalStatus === 'approved')
       .map((event) => ({
         ...event,
         seats: Array.isArray(event.seats)
           ? event.seats.filter((seat) => seat.studentId === studentId)
           : [],
       })),
-    attendance: state.attendance.filter((record) => record.studentId === studentId),
-    violations: state.violations.filter((item) => item.studentId === studentId),
+    attendance: [],
+    violations: [],
     messages: [],
     syncItems: [],
+    announcements: Array.isArray(state.announcements)
+      ? state.announcements.filter((announcement) =>
+          announcementVisibleToStudent(announcement, student),
+        )
+      : [],
   };
+}
+
+function announcementVisibleToStudent(announcement, student) {
+  const audience = announcement?.audience;
+  if (!audience || audience.type === 'all') return true;
+  if (audience.type === 'course') {
+    return (
+      typeof audience.course === 'string' &&
+      student.course === audience.course
+    );
+  }
+  if (audience.type === 'sections') {
+    return (
+      Array.isArray(audience.sectionIds) &&
+      typeof student.sectionId === 'string' &&
+      audience.sectionIds.includes(student.sectionId)
+    );
+  }
+  return false;
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function validateOrganizerWorkspace(state, nextState, user, env) {
+  if (
+    !sameJson(state.students, nextState.students) ||
+    !sameJson(state.announcements ?? [], nextState.announcements ?? [])
+  ) {
+    return 'Organizers cannot change student profiles or announcements.';
+  }
+  const previousEvents = new Map(state.events.map((event) => [event.id, event]));
+  const nextEvents = new Map(nextState.events.map((event) => [event.id, event]));
+  if (nextEvents.size !== nextState.events.length || previousEvents.size !== state.events.length) {
+    return 'The event list contains duplicate identifiers.';
+  }
+  for (const [id, event] of previousEvents) {
+    const submitted = nextEvents.get(id);
+    if (
+      !submitted ||
+      !sameJson(
+        event,
+        {
+          ...submitted,
+          approvalStatus: submitted.approvalStatus ?? 'approved',
+          requiredSections: submitted.requiredSections ?? [],
+        },
+      )
+    ) {
+      return 'Organizers can create events but cannot edit or approve existing events.';
+    }
+  }
+  const approvedEventIds = new Set(
+    state.events
+      .filter((event) => event.approvalStatus === 'approved')
+      .map((event) => event.id),
+  );
+  if (
+    nextState.attendance.some((record) => !approvedEventIds.has(record.eventId))
+  ) {
+    return 'Attendance can only be recorded for approved events.';
+  }
+  const previousMessages = new Map(state.messages.map((message) => [message.id, message]));
+  const nextMessages = new Map(nextState.messages.map((message) => [message.id, message]));
+  if (nextMessages.size !== nextState.messages.length) {
+    return 'The SMS outbox contains duplicate identifiers.';
+  }
+  for (const [id, message] of previousMessages) {
+    const submitted = nextMessages.get(id);
+    if (!submitted) return 'Organizers cannot remove saved SMS messages.';
+    const originalContent = { ...message };
+    const submittedContent = { ...submitted };
+    delete originalContent.status;
+    delete originalContent.syncStatus;
+    delete submittedContent.status;
+    delete submittedContent.syncStatus;
+    if (!sameJson(originalContent, submittedContent)) {
+      return 'Organizers cannot edit saved SMS messages.';
+    }
+  }
+  const newMessages = nextState.messages.filter(
+    (message) => !previousMessages.has(message.id),
+  );
+  const approvedEvents = new Map(
+    state.events
+      .filter((event) => event.approvalStatus === 'approved')
+      .map((event) => [event.id, event]),
+  );
+  for (const message of newMessages) {
+    const event = approvedEvents.get(message.eventId);
+    const eligibleStudent = event && state.students.some(
+      (student) =>
+        student.mobile === message.recipientNumber &&
+        (event.requiredSections ?? []).includes(student.sectionId ?? ''),
+    );
+    if (!eligibleStudent) {
+      return 'SMS can only be sent to students in the selected sections of approved events.';
+    }
+  }
+  const additions = nextState.events.filter((event) => !previousEvents.has(event.id));
+  if (
+    additions.some(
+      (event) =>
+        !Array.isArray(event.requiredSections) ||
+        event.requiredSections.length === 0,
+    )
+  ) {
+    return 'Every new event must include its required section IDs.';
+  }
+  if (additions.some((event) => !event.id || event.approvalStatus !== 'pending')) {
+    return 'Organizer-created events must be pending super-admin approval.';
+  }
+  const sectionIds = [...new Set(additions.flatMap((event) => event.requiredSections))];
+  if (sectionIds.some((id) => typeof id !== 'string')) {
+    return 'An event contains an invalid required section.';
+  }
+  if (sectionIds.length) {
+    const placeholders = sectionIds.map(() => '?').join(', ');
+    const { results } = await env.DB.prepare(
+      `SELECT id FROM sections WHERE organization_id = ? AND id IN (${placeholders})`,
+    )
+      .bind(user.organization_id, ...sectionIds)
+      .all();
+    if (results.length !== sectionIds.length) {
+      return 'An event refers to a section that is no longer available.';
+    }
+  }
+  nextState.events = [
+    ...state.events,
+    ...additions.map((event) => ({
+      ...event,
+      approvalStatus: 'pending',
+      createdBy: user.id,
+    })),
+  ];
+  return null;
 }
 
 async function workspace(request, user, env) {
@@ -457,6 +681,7 @@ async function workspace(request, user, env) {
       .first();
     if (!row) return json({ error: 'The school workspace was not found.' }, 404);
     const state = JSON.parse(row.state_json);
+    state.announcements ??= [];
     if (!validWorkspaceState(state)) {
       return json({ error: 'The saved school workspace is invalid.' }, 500);
     }
@@ -466,7 +691,7 @@ async function workspace(request, user, env) {
     });
   }
 
-  if (user.role !== 'organizer') {
+  if (user.role === 'student') {
     return json({ error: 'Student accounts cannot change shared school data.' }, 403);
   }
   const body = await readJson(request);
@@ -476,6 +701,28 @@ async function workspace(request, user, env) {
     !validWorkspaceState(body?.state)
   ) {
     return json({ error: 'Workspace state or revision is invalid.' }, 400);
+  }
+
+  const current = await env.DB.prepare(
+    'SELECT revision, state_json FROM workspace_state WHERE organization_id = ?',
+  )
+    .bind(user.organization_id)
+    .first();
+  if (!current) return json({ error: 'The school workspace was not found.' }, 404);
+  if (user.role === 'organizer') {
+    let currentState;
+    try {
+      currentState = JSON.parse(current.state_json);
+    } catch {
+      return json({ error: 'The saved school workspace is invalid.' }, 500);
+    }
+    const validationError = await validateOrganizerWorkspace(
+      currentState,
+      body.state,
+      user,
+      env,
+    );
+    if (validationError) return json({ error: validationError }, 403);
   }
 
   const result = await env.DB.prepare(
@@ -505,6 +752,104 @@ async function workspace(request, user, env) {
   return json({ revision: body.revision + 1 });
 }
 
+async function listSections(user, env) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, course, year_level AS yearLevel, name
+     FROM sections WHERE organization_id = ?
+     ORDER BY course, year_level, name COLLATE NOCASE`,
+  )
+    .bind(user.organization_id)
+    .all();
+  return json({ sections: results });
+}
+
+async function listPublicSections(env) {
+  const organization = await env.DB.prepare(
+    'SELECT id FROM organizations ORDER BY created_at LIMIT 1',
+  ).first();
+  if (!organization) return json({ sections: [] });
+  const { results } = await env.DB.prepare(
+    `SELECT id, course, year_level AS yearLevel, name
+     FROM sections WHERE organization_id = ?
+     ORDER BY course, year_level, name COLLATE NOCASE`,
+  )
+    .bind(organization.id)
+    .all();
+  return json({ sections: results });
+}
+
+async function saveSection(request, user, env, sectionId = null) {
+  if (user.role !== 'super_admin') {
+    return json({ error: 'Only the super admin can manage sections.' }, 403);
+  }
+  const body = await readJson(request);
+  const course = body?.course;
+  const yearLevel = body?.yearLevel;
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  if (!COURSES.includes(course) || !YEAR_LEVELS.includes(yearLevel) || !name || name.length > 32) {
+    return json({ error: 'Choose a valid course and year, and enter a section name up to 32 characters.' }, 400);
+  }
+  try {
+    if (sectionId) {
+      const result = await env.DB.prepare(
+        `UPDATE sections SET course = ?, year_level = ?, name = ?
+         WHERE id = ? AND organization_id = ?`,
+      )
+        .bind(course, yearLevel, name, sectionId, user.organization_id)
+        .run();
+      if (result.meta.changes === 0) return json({ error: 'That section was not found.' }, 404);
+      await env.DB.prepare(
+        `UPDATE workspace_state
+         SET revision = revision + 1,
+             state_json = json_set(
+               state_json,
+               '$.students',
+               json(COALESCE((
+                 SELECT json_group_array(
+                   CASE
+                     WHEN json_extract(student.value, '$.sectionId') = ?
+                       THEN json_set(
+                         student.value,
+                         '$.course', ?,
+                         '$.yearLevel', ?,
+                         '$.section', ?
+                       )
+                     ELSE student.value
+                   END
+                 )
+                 FROM json_each(workspace_state.state_json, '$.students') AS student
+               ), '[]'))),
+             updated_at = ?
+         WHERE organization_id = ?`,
+      )
+        .bind(
+          sectionId,
+          course,
+          yearLevel,
+          sectionLabel(course, yearLevel, name),
+          new Date().toISOString(),
+          user.organization_id,
+        )
+        .run();
+    } else {
+      sectionId = crypto.randomUUID();
+      await env.DB.prepare(
+        `INSERT INTO sections (id, organization_id, course, year_level, name)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+        .bind(sectionId, user.organization_id, course, yearLevel, name)
+        .run();
+    }
+  } catch (error) {
+    if (error?.message?.includes('UNIQUE constraint failed')) {
+      return json({ error: 'That section already exists for the selected course and year.' }, 409);
+    }
+    console.error('Section save failed:', error);
+    return json({ error: 'The section could not be saved.' }, 500);
+  }
+  return json({ id: sectionId, course, yearLevel, name });
+}
+
 async function handle(request, env) {
   if (!env.DB || !env.JWT_SECRET || env.JWT_SECRET.length < 32) {
     console.error('Cloudflare D1 or JWT_SECRET is not configured.');
@@ -519,7 +864,10 @@ async function handle(request, env) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '');
   if (request.method === 'POST' && path === '/api/auth/register') {
-    return registerFirstOrganizer(await readJson(request), env);
+    return registerStudent(await readJson(request), env);
+  }
+  if (request.method === 'GET' && path === '/api/sections') {
+    return listPublicSections(env);
   }
   if (request.method === 'POST' && path === '/api/auth/login') {
     return login(await readJson(request), env);
@@ -535,9 +883,19 @@ async function handle(request, env) {
   if (path === '/api/workspace' && ['GET', 'PUT'].includes(request.method)) {
     return workspace(request, user, env);
   }
+  if (path === '/api/sections' && request.method === 'GET') {
+    return listSections(user, env);
+  }
+  if (path === '/api/sections' && request.method === 'POST') {
+    return saveSection(request, user, env);
+  }
+  const sectionMatch = path.match(/^\/api\/sections\/([^/]+)$/);
+  if (sectionMatch && request.method === 'PUT') {
+    return saveSection(request, user, env, decodeURIComponent(sectionMatch[1]));
+  }
   if (path === '/api/accounts' && request.method === 'GET') {
-    if (user.role !== 'organizer') {
-      return json({ error: 'Only organizers can view school accounts.' }, 403);
+    if (user.role !== 'super_admin') {
+      return json({ error: 'Only the super admin can view school accounts.' }, 403);
     }
     return listAccounts(user, env);
   }

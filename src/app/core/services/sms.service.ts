@@ -17,8 +17,8 @@ const DATABASE_NAME = 'school_event_sms';
 const BROWSER_STORAGE_KEY = 'school-event-sms-outbox-v1';
 const DEFAULT_ACCOUNT_KEY = '__default__';
 const INSERT_MESSAGE = `INSERT OR IGNORE INTO sms_messages
-  (id, account_key, recipientName, recipientNumber, text, createdAt, status, syncStatus)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+  (id, account_key, recipientName, recipientNumber, text, createdAt, status, syncStatus, eventId)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 @Injectable({ providedIn: 'root' })
 export class SmsService {
@@ -51,10 +51,16 @@ export class SmsService {
     }
   }
 
-  async send(recipient: Student, text: string, online: boolean): Promise<void> {
+  async send(
+    recipient: Student,
+    text: string,
+    online: boolean,
+    eventId?: string,
+  ): Promise<void> {
     const timestamp = new Date().toISOString();
     const message: SmsMessage = {
       id: `SMS-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      eventId,
       recipientName: recipient.name,
       recipientNumber: recipient.mobile,
       text,
@@ -78,12 +84,14 @@ export class SmsService {
     recipients: Student[],
     text: (recipient: Student) => string,
     online: boolean,
+    eventId?: string,
   ): Promise<void> {
     if (recipients.length === 0) return;
 
     const timestamp = new Date().toISOString();
     const messages = recipients.map((recipient) => ({
       id: `SMS-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      eventId,
       recipientName: recipient.name,
       recipientNumber: recipient.mobile,
       text: text(recipient),
@@ -192,7 +200,7 @@ export class SmsService {
     if (this.database) {
       if (this.accountKey !== DEFAULT_ACCOUNT_KEY) {
         const legacy = await this.database.query(
-          `SELECT id, recipientName, recipientNumber, text, createdAt, status, syncStatus
+          `SELECT id, recipientName, recipientNumber, text, createdAt, status, syncStatus, eventId
            FROM sms_messages WHERE account_key = ? ORDER BY createdAt DESC`,
           [DEFAULT_ACCOUNT_KEY],
         );
@@ -213,7 +221,7 @@ export class SmsService {
         );
       }
       const result = await this.database.query(
-        `SELECT id, recipientName, recipientNumber, text, createdAt, status, syncStatus
+        `SELECT id, recipientName, recipientNumber, text, createdAt, status, syncStatus, eventId
          FROM sms_messages WHERE account_key = ?
          ORDER BY createdAt DESC, rowid DESC`,
         [this.accountKey],
@@ -277,7 +285,8 @@ export class SmsService {
       text TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('Queued', 'Sent')),
-      syncStatus TEXT NOT NULL CHECK (syncStatus IN ('Pending sync', 'Synced'))
+      syncStatus TEXT NOT NULL CHECK (syncStatus IN ('Pending sync', 'Synced')),
+      eventId TEXT
     )`);
     const columns = await database.query('PRAGMA table_info(sms_messages)');
     const hasAccountKey = (columns.values ?? []).some(
@@ -291,6 +300,16 @@ export class SmsService {
       await database.execute(
         `ALTER TABLE sms_messages ADD COLUMN account_key TEXT NOT NULL DEFAULT '${DEFAULT_ACCOUNT_KEY}'`,
       );
+    }
+    const hasEventId = (columns.values ?? []).some(
+      (row) =>
+        typeof row === 'object' &&
+        row !== null &&
+        'name' in row &&
+        row.name === 'eventId',
+    );
+    if (!hasEventId) {
+      await database.execute('ALTER TABLE sms_messages ADD COLUMN eventId TEXT');
     }
     this.database = database;
     return database;
@@ -327,6 +346,7 @@ export class SmsService {
         message.createdAt,
         message.status,
         message.syncStatus,
+        message.eventId ?? null,
       ],
     };
   }
@@ -336,7 +356,7 @@ export class SmsService {
       if (!this.isSmsMessage(row)) {
         throw new Error('The SMS database contains an invalid message row.');
       }
-      return row;
+      return row.eventId === null ? { ...row, eventId: undefined } : row;
     });
   }
 
@@ -353,6 +373,7 @@ export class SmsService {
     const row = value as Record<string, unknown>;
     return (
       typeof row['id'] === 'string' &&
+      (row['eventId'] === undefined || row['eventId'] === null || typeof row['eventId'] === 'string') &&
       typeof row['recipientName'] === 'string' &&
       typeof row['recipientNumber'] === 'string' &&
       typeof row['text'] === 'string' &&

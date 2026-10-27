@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create gather-school-data",
     "db:migrate:local": "wrangler d1 migrations apply gather-school-data --local",
-    "db:migrate:remote": "wrangler d1 migrations apply gather-school-data --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply gather-school-data --remote",
+    "db:seed:super-admin": "node scripts/seed-super-admin.js"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

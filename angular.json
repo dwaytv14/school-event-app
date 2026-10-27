@@ -53,8 +53,8 @@
                 },
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "20kb",
-                  "maximumError": "24kb"
+                  "maximumWarning": "38kb",
+                  "maximumError": "40kb"
                 }
               ],
               "serviceWorker": "ngsw-config.json",

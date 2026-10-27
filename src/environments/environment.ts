@@ -1,4 +1,4 @@
 export const environment = {
   production: false,
-  apiBaseUrl: 'http://localhost:8787/api',
+  apiBaseUrl: 'https://gather-school-api.gather-school-api.workers.dev/api',
 };
