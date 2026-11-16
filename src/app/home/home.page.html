@@ -190,7 +190,6 @@
         <h1>School overview</h1>
         <p class="muted">Manage events, students, and attendance across campus.</p>
       </div>
-      <app-avatar [src]="auth.avatar()" [name]="auth.username()" [size]="48" />
     </section>
     @if (pendingCount() > 0 || !isOnline()) {
     <button class="sync-banner" type="button" (click)="go('settings')">
@@ -316,11 +315,6 @@
           {{ formatDate(event.date) }} · Your campus, in sync.
         </p>
       </div>
-      <app-avatar
-        [src]="auth.avatar()"
-        [name]="state().role === 'organizer' ? auth.username() : activeStudent().name"
-        [size]="48"
-      />
     </section>
     <section class="featured-event">
       <div class="featured-top">

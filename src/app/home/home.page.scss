@@ -4065,3 +4065,15 @@ ion-segment-button::part(indicator-background) {
   background: #fdecea;
   color: #7a1d17;
 }
+
+/* Header: brand on the left, profile photo and status on the right. */
+.topbar .brand {
+  margin-right: auto;
+}
+.topbar .header-greeting {
+  margin-left: auto;
+}
+.topbar .header-greeting + .header-avatar,
+.topbar .header-avatar {
+  margin-left: 0;
+}
