@@ -344,7 +344,7 @@ export abstract class HomeBaseDirective {
       'settings-attendance', 'settings-app', 'settings-advanced', 'announcements',
       'settings-username', 'settings-password',
       'student-detail', 'settings-activity', 'settings-organizers', 'excuses',
-      'postpone-event', 'settings-school-year',
+      'postpone-event', 'settings-school-year', 'event-approvals',
     ];
   }
   protected homeScreenForRole(): string {

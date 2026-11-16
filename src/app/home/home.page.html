@@ -260,6 +260,10 @@
           <ion-icon name="person-outline"></ion-icon><strong>Organizers</strong
           ><small>Manage organizer accounts</small>
         </button>
+        <button type="button" (click)="go('event-approvals')">
+          <ion-icon name="checkmark-done-outline"></ion-icon><strong>Event approvals</strong
+          ><small>{{ pendingEvents().length }} waiting for review</small>
+        </button>
         <button type="button" (click)="go('excuses')">
           <ion-icon name="shield-checkmark-outline"></ion-icon><strong>Excuse requests</strong
           ><small>{{ pendingExcuseCount() }} waiting for review</small>
@@ -443,6 +447,11 @@
       <ion-icon name="add-outline"></ion-icon> Create event
     </button>
     }
+    @if (state().role === 'super_admin') {
+    <button class="secondary-button full-button" type="button" (click)="go('event-approvals')">
+      Event approvals ({{ pendingEvents().length }} pending)
+    </button>
+    }
     <div class="events-toolbar">
       <ion-segment
         class="pill-segment"
@@ -521,25 +530,6 @@
         actionLabel="Try again"
         (action)="refreshNow()"
       />
-      }
-      @if (state().role === 'super_admin' && pendingEvents().length) {
-      <section class="approval-panel">
-        <p class="eyebrow">EVENT APPROVALS</p>
-        <h2>Pending events</h2>
-        @for (event of pendingEvents(); track event.id) {
-        <article class="approval-row">
-          <div>
-            <strong>{{ event.name }}</strong>
-            <small>{{ formatDate(event.date) }} · {{ event.startTime }} · {{ event.venue }}</small>
-            <ion-chip color="warning">Waiting for approval</ion-chip>
-          </div>
-          <div class="approval-actions">
-            <button class="primary-button" type="button" (click)="approveEvent(event.id)">Approve</button>
-            <button class="secondary-button reject-button" type="button" (click)="rejectEvent(event.id)">Reject</button>
-          </div>
-        </article>
-        }
-      </section>
       }
       @if (refreshing() || (syncProgress() && state().events.length === 0)) {
       <div class="skeleton-grid" aria-label="Loading events">
@@ -1661,6 +1651,35 @@
     } @else {
     <app-state-panel icon="people-outline" heading="Student not found" message="They may have been deleted." actionLabel="Back to students" (action)="go('students')" />
     }
+    } @else if (page() === 'event-approvals') {
+    <button class="back-link" type="button" (click)="go('events')">‹ All events</button>
+    <div class="page-heading">
+      <p class="eyebrow">EVENT APPROVALS</p>
+      <h1>Pending events</h1>
+      <p class="muted">Events from organizers wait here until you approve or reject them.</p>
+    </div>
+    <div class="event-list">
+      @if (pendingEvents().length) {
+      <section class="approval-panel">
+        @for (event of pendingEvents(); track event.id) {
+        <article class="approval-row">
+          <div>
+            <button class="text-action" type="button" (click)="openEvent(event.id)"><strong>{{ event.name }}</strong></button>
+            <small>{{ formatDate(event.date) }} · {{ event.startTime }} · {{ event.venue }}</small>
+            @if (event.createdByName) { <small>By {{ event.createdByName }}</small> }
+            <ion-chip color="warning">Waiting for approval</ion-chip>
+          </div>
+          <div class="approval-actions">
+            <button class="primary-button" type="button" (click)="approveEvent(event.id)">Approve</button>
+            <button class="secondary-button reject-button" type="button" (click)="rejectEvent(event.id)">Reject</button>
+          </div>
+        </article>
+        }
+      </section>
+      } @else {
+      <app-state-panel icon="checkmark-done-outline" heading="Nothing to approve" message="New events from organizers will show up here." />
+      }
+    </div>
     } @else if (page() === 'excuses') {
     <div class="page-heading">
       <p class="eyebrow">STUDENT REQUESTS</p>
