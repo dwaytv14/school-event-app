@@ -1,9 +1,9 @@
-import { Injectable } from '@angular/core';
+import { inject, Injectable } from '@angular/core';
 import { DemoStoreService } from './demo-store.service';
 
 @Injectable({ providedIn: 'root' })
 export class SeatingService {
-  constructor(private readonly store: DemoStoreService) {}
+  private readonly store = inject(DemoStoreService);
 
   assign(eventId: string, studentId: string, seatId: string): boolean {
     let assigned = false;

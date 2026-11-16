@@ -81,19 +81,20 @@ export class SmsService {
     text: (recipient: Student) => string,
     online: boolean,
     eventId?: string,
-  ): Promise<void> {
-    if (recipients.length === 0) return;
+    status?: SmsMessage['status'],
+  ): Promise<SmsMessage[]> {
+    if (recipients.length === 0) return [];
 
     const timestamp = new Date().toISOString();
-    const messages = recipients.map((recipient) => ({
+    const messages: SmsMessage[] = recipients.map((recipient) => ({
       id: `SMS-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       eventId,
       recipientName: recipient.name,
       recipientNumber: recipient.mobile,
       text: text(recipient),
       createdAt: timestamp,
-      status: online ? ('Sent' as const) : ('Queued' as const),
-      syncStatus: online ? ('Synced' as const) : ('Pending sync' as const),
+      status: status ?? (online ? 'Sent' : 'Queued'),
+      syncStatus: online ? 'Synced' : 'Pending sync',
     }));
 
     await this.saveMessages(messages);
@@ -106,6 +107,34 @@ export class SmsService {
       }));
       state.syncItems.push(...items);
     });
+    return messages;
+  }
+
+  /** Marks one outbox message as really sent from this phone's SIM. */
+  async markSent(id: string): Promise<void> {
+    await this.initialize();
+    try {
+      if (this.database) {
+        await this.database.run(
+          "UPDATE sms_messages SET status = 'Sent' WHERE id = ? AND account_key = ?",
+          [id, this.accountKey],
+        );
+      } else {
+        this.writeBrowserMessages(
+          this.messages().map((message) =>
+            message.id === id ? { ...message, status: 'Sent' as const } : message,
+          ),
+        );
+      }
+      this.messages.update((messages): SmsMessage[] =>
+        messages.map((message) =>
+          message.id === id ? { ...message, status: 'Sent' } : message,
+        ),
+      );
+    } catch (error) {
+      this.reportError(error);
+      throw error;
+    }
   }
 
   async markAllSynced(): Promise<void> {

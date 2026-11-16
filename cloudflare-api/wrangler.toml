@@ -12,3 +12,8 @@ migrations_dir = "migrations"
 
 [vars]
 CLIENT_ORIGINS = "capacitor://localhost,https://localhost,http://localhost:4200,http://127.0.0.1:4200"
+
+# Runs once a day at 1:00 AM Philippine time (17:00 UTC) to promote students
+# after the school year ends, when the admin turned that on.
+[triggers]
+crons = ["0 17 * * *"]

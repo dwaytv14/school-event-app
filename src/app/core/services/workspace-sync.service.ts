@@ -221,6 +221,32 @@ export class WorkspaceSyncService {
     this.pending.set(this.resetPending);
   }
 
+  async acceptRemoteReset(revision: number): Promise<void> {
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error('The shared server returned an invalid workspace revision.');
+    }
+    this.store.replace(
+      {
+        ...this.store.state(),
+        selectedEventId: '',
+        students: [],
+        events: [],
+        attendance: [],
+        violations: [],
+        messages: [],
+        syncItems: [],
+        announcements: [],
+      },
+      false,
+    );
+    this.revision = revision;
+    this.resetPending = false;
+    this.pending.set(false);
+    this.generation += 1;
+    await this.sms.replaceFromSync([]);
+    await this.saveCache(this.store.state(), false, false);
+  }
+
   async flushLocalChanges(): Promise<void> {
     await this.persistQueue;
     if (this.auth.username()) {
@@ -344,11 +370,10 @@ export class WorkspaceSyncService {
     return {
       revision: remote.revision,
       state: {
-        students: organizer
-          ? this.preferRemoteById(remote.state.students, local.state.students)
-          : this.mergeById(remote.state.students, local.state.students),
+        // Only the server changes student profiles (signup, contact number).
+        students: this.preferRemoteById(remote.state.students, local.state.students),
         events: organizer
-          ? this.preferRemoteById(remote.state.events, local.state.events)
+          ? this.mergeOrganizerEvents(remote.state.events, local.state.events)
           : this.mergeById(remote.state.events, local.state.events),
         attendance: this.mergeById(
           remote.state.attendance,
@@ -377,6 +402,31 @@ export class WorkspaceSyncService {
             ),
       },
     };
+  }
+
+  /**
+   * The server's events win, except an organizer's newer edit of their own
+   * event that has not been approved yet.
+   */
+  private mergeOrganizerEvents(
+    remote: WorkspaceSnapshot['state']['events'],
+    local: WorkspaceSnapshot['state']['events'],
+  ): WorkspaceSnapshot['state']['events'] {
+    const userId = this.auth.userId();
+    const localById = new Map(local.map((event) => [event.id, event]));
+    const merged = remote.map((event) => {
+      const edited = localById.get(event.id);
+      const mine =
+        !!userId &&
+        event.createdBy === userId &&
+        event.approvalStatus !== 'approved';
+      const newer =
+        !!edited?.resubmittedAt &&
+        (!event.resubmittedAt || edited.resubmittedAt > event.resubmittedAt);
+      return mine && edited && newer ? edited : event;
+    });
+    const remoteIds = new Set(remote.map((event) => event.id));
+    return [...merged, ...local.filter((event) => !remoteIds.has(event.id))];
   }
 
   private preferRemoteById<T extends { id: string }>(

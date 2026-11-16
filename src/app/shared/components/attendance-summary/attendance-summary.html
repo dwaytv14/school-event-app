@@ -1,0 +1,45 @@
+<section class="stats" aria-label="Attendance summary">
+  <article class="stat wide">
+    <strong>{{ summary().percentage === null ? '—' : summary().percentage + '%' }}</strong>
+    <span>Attendance rate{{ summary().counted ? ' · ' + summary().attended + ' of ' + summary().counted + ' required events' : '' }}</span>
+  </article>
+  <article class="stat"><strong>{{ summary().present }}</strong><span>Present</span></article>
+  <article class="stat"><strong>{{ summary().late }}</strong><span>Late</span></article>
+  <article class="stat"><strong>{{ summary().absent }}</strong><span>Absent</span></article>
+</section>
+
+@for (row of summary().rows; track row.event.id) {
+<article class="row">
+  <div class="main">
+    <strong>{{ row.event.name }}</strong>
+    <small>{{ date(row.event.date) }} · {{ row.event.startTime }}–{{ row.event.endTime }} · {{ row.event.venue }}</small>
+    @if (row.record && !row.record.excused) {
+    <div class="times">
+      <span>IN {{ time(row.record.timeIn) }}</span>
+      <span>OUT {{ time(row.record.timeOut) }}</span>
+    </div>
+    }
+    @if (allowExcuse() && row.status === 'Absent') {
+    @let request = requestFor(row.event.id);
+    @if (request?.status === 'pending') {
+    <p class="note">Excuse request sent. Waiting for the admin.</p>
+    <button class="link" type="button" (click)="withdraw.emit(request!.id)">Withdraw request</button>
+    } @else {
+    @if (request?.status === 'rejected') {
+    <p class="note note-rejected">Excuse rejected{{ request?.reviewerNote ? ': ' + request?.reviewerNote : '.' }}</p>
+    }
+    <button class="link" type="button" (click)="excuse.emit(row.event.id)">
+      {{ request ? 'Ask again' : 'Ask to be excused' }}
+    </button>
+    }
+    }
+  </div>
+  <ion-chip [color]="color(row.status)">{{ row.status }}</ion-chip>
+</article>
+} @empty {
+<app-state-panel
+  icon="calendar-outline"
+  heading="No required events yet"
+  message="Events this section must attend will show up here with check-in and check-out times."
+/>
+}

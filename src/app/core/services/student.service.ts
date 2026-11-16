@@ -1,10 +1,10 @@
-import { Injectable } from '@angular/core';
+import { inject, Injectable } from '@angular/core';
 import { Student } from '../models/school-event.models';
 import { DemoStoreService } from './demo-store.service';
 
 @Injectable({ providedIn: 'root' })
 export class StudentService {
-  constructor(private readonly store: DemoStoreService) {}
+  private readonly store = inject(DemoStoreService);
 
   add(input: Omit<Student, 'id'>): Student {
     const student: Student = {
@@ -20,6 +20,14 @@ export class StudentService {
     this.store.update((state) => {
       state.students.push(student);
       state.events.forEach((event) => {
+        if (event.seatingPlan) {
+          if (!(event.requiredSections ?? []).includes(student.sectionId ?? '')) {
+            return;
+          }
+          if (!event.sections.includes(student.section))
+            event.sections.push(student.section);
+          return;
+        }
         if (!event.sections.includes(student.section))
           event.sections.push(student.section);
 

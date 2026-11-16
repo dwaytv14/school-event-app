@@ -56,7 +56,9 @@ npm --prefix cloudflare-api run db:seed:super-admin
 Remove-Item Env:SUPER_ADMIN_PASSWORD
 ```
 
-Sign in as the super admin and add the course/year/section combinations under Settings before students register. Student signup is public and immediate: it creates a linked student profile and account on the server, and requires internet. New users select their course, year, and section and provide a Philippine mobile number. Super admins create organizer accounts and approve organizer-created events. Students receive only approved events, announcements, and their own QR pass. Organizer accounts are limited to scanning attendance at approved events and creating events, which remain pending until approved.
+Student signup is public and immediate: it creates a linked student profile and account on the server, and requires internet. Students enter their PPY student ID, full name, Philippine contact number, course, year, and section (A or B). The app creates a missing course/year/section entry automatically. Super admins can create organizer accounts and approve organizer-created events. Students receive only approved events, announcements, and their own QR pass. Organizer accounts are limited to scanning attendance at approved events and creating events, which remain pending until approved.
+
+The super admin can reset the shared app under Settings → Advanced. This deletes all non-admin accounts and shared workspace records, including students, events, attendance, and announcements, while keeping the signed-in admin account and recreating the supported A/B section choices. The operation affects all devices and cannot be undone.
 
 Workspace data is cached on each device (SQLite on Android/iOS; local storage in browser previews) and syncs to D1 when connectivity is available. After a successful first online sign-in, users can continue with the last saved workspace offline; changes sync after reconnecting. The installed APK connects directly to the hosted Worker and does not depend on `npm start` or a server running on the developer's computer.
 
@@ -86,15 +88,15 @@ The app creates no sample sections, students, events, or announcements. Students
 ## Organizer workflow
 
 1. **School setup:** sign in as `PPY-ADMIN`, configure sections in Settings, and create organizer accounts.
-2. **Student registration:** students sign up online with their name, course, year, section, Philippine mobile number, username, and password. Their QR pass is generated from the linked profile.
+2. **Student registration:** students sign up online with their PPY-number student ID, name, course, year, section A/B, contact number, username, and password. Their unique QR pass contains their student ID and resolves to their saved profile.
 3. **Event setup and approval:** organizers or the super admin create events and select required section groups. Organizer-created events remain pending until approved by the super admin.
-4. **QR attendance:** organizers scan student passes for approved events. Attendance and changes sync when the device is online.
+4. **QR attendance:** organizers scan student passes for approved events; the app identifies the student and shows their course, year, section, and assigned seat. The first scan records IN, the second records OUT, and later scans report that the student is already OUT.
 5. **Announcements and offline access:** the super admin publishes announcements for the school. Previously signed-in users can view their cached workspace offline; pending local changes sync after reconnecting.
 
 ## Prototype limitations
 
 - SMS delivery is simulated in the local outbox. “Open in SMS app” creates an `sms:` link; the browser/device decides whether it can open a messaging app.
-- Camera scanning requires browser camera permission and a secure context (`localhost` or HTTPS). Simulate Scan is always available.
+- Camera scanning requires browser camera permission and a secure context (`localhost` or HTTPS).
 - Real cross-device storage requires the deployed Cloudflare Worker and D1 database to be available; no local server or tunnel needs to stay running. The online/offline simulation toggle is only for testing offline behavior.
 - Offline data remains on the current device until it successfully synchronizes to the shared API/database. Keep devices online periodically so their changes can sync.
 - PWA shell caching is configured for production. Camera use and saved browser data still depend on browser permissions and storage policies.

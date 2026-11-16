@@ -22,12 +22,61 @@ export interface WorkspaceSnapshot {
 
 export interface AuthenticationResponse {
   token: string;
+  id?: string;
   username: string;
   role: UserRole;
   studentId: string | null;
+  avatar?: string | null;
+}
+
+export interface AuditEntry {
+  id: string;
+  at: string;
+  actorName: string;
+  actorRole: string;
+  action: string;
+  summary: string;
+}
+
+export interface PromotionPreview {
+  steps: { from: string; to: string | null; students: number }[];
+  graduating: number;
+  promoting: number;
+  skipped: number;
+  newSections: number;
+}
+
+export interface SchoolYearSettings {
+  endDate: string | null;
+  enabled: boolean;
+  lastPromotedFor: string | null;
+  available: boolean;
+  today: string;
+  preview: PromotionPreview | null;
+}
+
+export type ExcuseStatus = 'pending' | 'approved' | 'rejected';
+
+export interface ExcuseRequest {
+  id: string;
+  eventId: string;
+  eventName: string;
+  studentId: string;
+  studentName: string;
+  section: string;
+  reason: string;
+  status: ExcuseStatus;
+  reviewerNote: string | null;
+  createdAt: string;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  hasPhoto: boolean;
+  photo?: string | null;
 }
 
 export interface WorkspaceAccount {
+  id?: string;
+  disabled?: boolean;
   username: string;
   role: UserRole;
   studentId: string | null;
@@ -42,10 +91,12 @@ export interface SchoolSection {
 }
 
 export interface StudentRegistration {
+  studentNumber: string;
   name: string;
   course: string;
   yearLevel: string;
-  sectionId: string;
+  section: string;
+  sectionId?: string;
   mobile: string;
 }
 
@@ -129,6 +180,207 @@ export class WorkspaceApiService {
     );
   }
 
+  requestContactChange(
+    token: string,
+    mobile: string,
+    currentPassword: string,
+  ): Promise<{ code: string; mobile: string; expiresInSeconds: number }> {
+    return firstValueFrom(
+      this.http.post<{ code: string; mobile: string; expiresInSeconds: number }>(
+        `${this.baseUrl()}/account/contact/request`,
+        { mobile, currentPassword },
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  confirmContactChange(token: string, code: string): Promise<{ mobile: string }> {
+    return firstValueFrom(
+      this.http.post<{ mobile: string }>(
+        `${this.baseUrl()}/account/contact/confirm`,
+        { code },
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  changePassword(
+    token: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<AuthenticationResponse> {
+    return firstValueFrom(
+      this.http.post<AuthenticationResponse>(
+        `${this.baseUrl()}/account/password`,
+        { currentPassword, newPassword },
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  changeUsername(
+    token: string,
+    currentPassword: string,
+    username: string,
+  ): Promise<AuthenticationResponse> {
+    return firstValueFrom(
+      this.http.post<AuthenticationResponse>(
+        `${this.baseUrl()}/account/username`,
+        { currentPassword, username },
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  getSchoolYear(token: string): Promise<SchoolYearSettings> {
+    return firstValueFrom(
+      this.http.get<SchoolYearSettings>(`${this.baseUrl()}/admin/school-year`, {
+        headers: this.authorization(token),
+      }),
+    );
+  }
+
+  saveSchoolYear(
+    token: string,
+    settings: { enabled: boolean; endDate: string | null },
+  ): Promise<SchoolYearSettings> {
+    return firstValueFrom(
+      this.http.put<SchoolYearSettings>(`${this.baseUrl()}/admin/school-year`, settings, {
+        headers: this.authorization(token),
+      }),
+    );
+  }
+
+  setAccountDisabled(
+    token: string,
+    username: string,
+    disabled: boolean,
+  ): Promise<{ username: string; disabled: boolean }> {
+    return firstValueFrom(
+      this.http.post<{ username: string; disabled: boolean }>(
+        `${this.baseUrl()}/admin/users/${encodeURIComponent(username)}/disabled`,
+        { disabled },
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  deleteAccount(token: string, username: string): Promise<{ deleted: boolean }> {
+    return firstValueFrom(
+      this.http.delete<{ deleted: boolean }>(
+        `${this.baseUrl()}/admin/users/${encodeURIComponent(username)}`,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  auditLog(
+    token: string,
+    before?: string,
+  ): Promise<{ entries: AuditEntry[]; next: string | null }> {
+    const query = before ? `&before=${encodeURIComponent(before)}` : '';
+    return firstValueFrom(
+      this.http.get<{ entries: AuditEntry[]; next: string | null }>(
+        `${this.baseUrl()}/admin/audit?limit=50${query}`,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  createExcuse(
+    token: string,
+    request: { eventId: string; reason: string; photo: string | null },
+  ): Promise<{ id: string; status: ExcuseStatus }> {
+    return firstValueFrom(
+      this.http.post<{ id: string; status: ExcuseStatus }>(
+        `${this.baseUrl()}/excuses`,
+        request,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  myExcuses(token: string): Promise<{ excuses: ExcuseRequest[] }> {
+    return firstValueFrom(
+      this.http.get<{ excuses: ExcuseRequest[] }>(`${this.baseUrl()}/excuses/mine`, {
+        headers: this.authorization(token),
+      }),
+    );
+  }
+
+  listExcuses(
+    token: string,
+    status?: ExcuseStatus,
+  ): Promise<{ excuses: ExcuseRequest[]; pending: number }> {
+    const query = status ? `?status=${status}` : '';
+    return firstValueFrom(
+      this.http.get<{ excuses: ExcuseRequest[]; pending: number }>(
+        `${this.baseUrl()}/excuses${query}`,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  getExcuse(token: string, id: string): Promise<ExcuseRequest> {
+    return firstValueFrom(
+      this.http.get<ExcuseRequest>(`${this.baseUrl()}/excuses/${encodeURIComponent(id)}`, {
+        headers: this.authorization(token),
+      }),
+    );
+  }
+
+  withdrawExcuse(token: string, id: string): Promise<{ withdrawn: boolean }> {
+    return firstValueFrom(
+      this.http.delete<{ withdrawn: boolean }>(
+        `${this.baseUrl()}/excuses/${encodeURIComponent(id)}`,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  reviewExcuse(
+    token: string,
+    id: string,
+    decision: 'approved' | 'rejected',
+    note: string,
+  ): Promise<ExcuseRequest> {
+    return firstValueFrom(
+      this.http.post<ExcuseRequest>(
+        `${this.baseUrl()}/excuses/${encodeURIComponent(id)}/review`,
+        { decision, note },
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  saveAvatar(token: string, image: string): Promise<{ avatar: string | null }> {
+    return firstValueFrom(
+      this.http.put<{ avatar: string | null }>(
+        `${this.baseUrl()}/profile/avatar`,
+        { image },
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  removeAvatar(token: string): Promise<{ avatar: string | null }> {
+    return firstValueFrom(
+      this.http.delete<{ avatar: string | null }>(
+        `${this.baseUrl()}/profile/avatar`,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
+  studentAvatar(token: string, studentId: string): Promise<{ avatar: string | null }> {
+    return firstValueFrom(
+      this.http.get<{ avatar: string | null }>(
+        `${this.baseUrl()}/students/${encodeURIComponent(studentId)}/avatar`,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
   listAccounts(token: string): Promise<{ accounts: WorkspaceAccount[] }> {
     return firstValueFrom(
       this.http.get<{ accounts: WorkspaceAccount[] }>(
@@ -198,6 +450,14 @@ export class WorkspaceApiService {
         { password },
         { headers: this.authorization(token) },
       ),
+    );
+  }
+
+  resetSharedWorkspace(token: string): Promise<{ revision: number }> {
+    return firstValueFrom(
+      this.http.delete<{ revision: number }>(`${this.baseUrl()}/admin/reset`, {
+        headers: this.authorization(token),
+      }),
     );
   }
 

@@ -1,0 +1,77 @@
+:host {
+  display: block;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.stat {
+  display: grid;
+  gap: 2px;
+  padding: 12px;
+  border: 1px solid #dfe5f0;
+  border-radius: 14px;
+  background: #fff;
+}
+.stat.wide {
+  grid-column: 1 / -1;
+}
+.stat strong {
+  color: #14234f;
+  font-size: 24px;
+}
+.stat span {
+  color: #4b5675;
+  font-size: 12px;
+}
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid #dfe5f0;
+  border-radius: 14px;
+  background: #fff;
+}
+.main {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+.main strong {
+  color: #14234f;
+  font-size: 15px;
+}
+.main small {
+  color: #4b5675;
+  font-size: 12px;
+}
+.times {
+  display: flex;
+  gap: 12px;
+  color: #14234f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.note {
+  margin: 4px 0 0;
+  color: #5c4500;
+  font-size: 12px;
+}
+.note-rejected {
+  color: #9c2b25;
+}
+.link {
+  justify-self: start;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #1c3894;
+  font-size: 13px;
+  font-weight: 800;
+}

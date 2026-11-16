@@ -10,6 +10,13 @@ const WORKSPACE_KEYS = [
 const COURSES = ['BSIT', 'BSBA', 'BSED', 'BEED'];
 const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
 const PASSWORD_HASH_ITERATIONS = 100_000;
+const AVATAR_PATTERN = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+const MAX_AVATAR_LENGTH = 150_000;
+const CONTACT_CODE_TTL_MS = 10 * 60 * 1000;
+const CONTACT_RESEND_MS = 60 * 1000;
+const CONTACT_MAX_ATTEMPTS = 5;
+const MAX_EXCUSE_PHOTO_LENGTH = 250_000;
+const AUDIT_KEEP_DAYS = 180;
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -177,7 +184,7 @@ function corsHeaders(request, env) {
     .map((item) => item.trim())
     .filter(Boolean);
   const headers = {
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
@@ -239,14 +246,19 @@ async function requireUser(request, env) {
   ) {
     return { error: json({ error: 'Your session has changed. Please sign in again.' }, 401) };
   }
+  if (await isDisabled(env, row.id)) {
+    return {
+      error: json({ error: 'This account has been turned off. Please ask the admin.' }, 401),
+    };
+  }
   return { user: row };
 }
 
 function normalizedMobile(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
+  // Digits only: 09XXXXXXXXX (stored as +639XXXXXXXXX).
   if (/^09\d{9}$/.test(trimmed)) return `+63${trimmed.slice(1)}`;
-  if (/^\+639\d{9}$/.test(trimmed)) return trimmed;
   return null;
 }
 
@@ -254,10 +266,21 @@ function sectionLabel(course, yearLevel, sectionName) {
   return `${course} ${yearLevel} ${sectionName}`;
 }
 
+// Past events keep a saved list of who was required (event.roster), so student
+// promotions never change history. Other events use the student's section.
+function isStudentRequired(event, student) {
+  if (event.roster) {
+    return Object.values(event.roster).some((ids) => ids.includes(student.id));
+  }
+  return (event.requiredSections ?? []).includes(student.sectionId ?? '');
+}
+
 function addStudentToEvent(event, student) {
+  if (event.roster) return;
   if (!(event.requiredSections ?? []).includes(student.sectionId)) return;
   if (!Array.isArray(event.sections)) event.sections = [];
   if (!event.sections.includes(student.section)) event.sections.push(student.section);
+  if (event.seatingPlan) return;
   if (!Array.isArray(event.seats)) event.seats = [];
   if (event.seats.some((seat) => seat.studentId === student.id)) return;
 
@@ -295,10 +318,14 @@ function addStudentToEvent(event, student) {
 async function registerStudent(body, env) {
   const username = typeof body?.username === 'string' ? body.username.trim() : '';
   const password = body?.password;
+  const studentNumber =
+    typeof body?.studentNumber === 'string' ? body.studentNumber.trim() : '';
   const name = typeof body?.name === 'string' ? body.name.trim() : '';
-  const course = typeof body?.course === 'string' ? body.course : '';
-  const yearLevel = typeof body?.yearLevel === 'string' ? body.yearLevel : '';
-  const sectionId = typeof body?.sectionId === 'string' ? body.sectionId : '';
+  let course = typeof body?.course === 'string' ? body.course : '';
+  let yearLevel = typeof body?.yearLevel === 'string' ? body.yearLevel : '';
+  const sectionName = typeof body?.section === 'string' ? body.section : '';
+  const requestedSectionId =
+    typeof body?.sectionId === 'string' ? body.sectionId : '';
   const mobile = normalizedMobile(body?.mobile);
   if (!validUsername(username)) {
     return json(
@@ -309,14 +336,25 @@ async function registerStudent(body, env) {
   if (!validPassword(password)) {
     return json({ error: 'Password must be 8–128 characters.' }, 400);
   }
+  if (!/^PPY-\d{1,12}$/.test(studentNumber)) {
+    return json({ error: 'Student ID must use the format PPY- followed by numbers.' }, 400);
+  }
   if (!name || name.length > 120) {
     return json({ error: 'Enter a full name of up to 120 characters.' }, 400);
   }
-  if (!COURSES.includes(course) || !YEAR_LEVELS.includes(yearLevel) || !sectionId) {
+  if (!/^\p{L}+( \p{L}+)*$/u.test(name)) {
+    return json({ error: 'Full name can contain letters and spaces only.' }, 400);
+  }
+  if (
+    !requestedSectionId &&
+    (!COURSES.includes(course) ||
+      !YEAR_LEVELS.includes(yearLevel) ||
+      !['A', 'B'].includes(sectionName))
+  ) {
     return json({ error: 'Select a course, year level, and section.' }, 400);
   }
   if (!mobile) {
-    return json({ error: 'Enter a valid Philippine mobile number, such as 09XXXXXXXXX.' }, 400);
+    return json({ error: 'Contact number must be numbers only: 11 digits starting with 09, such as 09123456789.' }, 400);
   }
 
   const organization = await env.DB.prepare(
@@ -325,21 +363,36 @@ async function registerStudent(body, env) {
   if (!organization) {
     return json({ error: 'The school is not set up yet. Ask the super admin to initialize it.' }, 503);
   }
-  const section = await env.DB.prepare(
-    `SELECT id, course, year_level, name FROM sections
-     WHERE id = ? AND organization_id = ?`,
-  )
-    .bind(sectionId, organization.id)
-    .first();
-  if (
-    !section ||
-    section.course !== course ||
-    section.year_level !== yearLevel
-  ) {
-    return json({ error: 'Choose a section that belongs to the selected course and year.' }, 400);
+  let section;
+  if (requestedSectionId) {
+    section = await env.DB.prepare(
+      `SELECT id, course, year_level, name FROM sections
+       WHERE organization_id = ? AND id = ?`,
+    )
+      .bind(organization.id, requestedSectionId)
+      .first();
+    if (!section) {
+      return json({ error: 'That section is no longer available. Choose another section.' }, 400);
+    }
+    course = section.course;
+    yearLevel = section.year_level;
+  } else {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO sections (id, organization_id, course, year_level, name)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(crypto.randomUUID(), organization.id, course, yearLevel, sectionName)
+      .run();
+    section = await env.DB.prepare(
+      `SELECT id, course, year_level, name FROM sections
+       WHERE organization_id = ? AND course = ? AND year_level = ? AND name = ?`,
+    )
+      .bind(organization.id, course, yearLevel, sectionName)
+      .first();
   }
+  if (!section) return json({ error: 'The selected section could not be created.' }, 500);
   const userId = crypto.randomUUID();
-  const studentId = crypto.randomUUID();
+  const studentId = studentNumber;
   const now = new Date().toISOString();
   const passwordHash = await hashPassword(password);
   const student = {
@@ -347,7 +400,7 @@ async function registerStudent(body, env) {
     name,
     course,
     yearLevel,
-    sectionId,
+    sectionId: section.id,
     section: sectionLabel(course, yearLevel, section.name),
     mobile,
   };
@@ -368,6 +421,9 @@ async function registerStudent(body, env) {
       }
       if (!Array.isArray(state.students) || !Array.isArray(state.events)) {
         return json({ error: 'The saved school workspace is invalid.' }, 500);
+      }
+      if (state.students.some((student) => student.id === studentId)) {
+        return json({ error: 'That student ID is already registered.' }, 409);
       }
       state.announcements ??= [];
       state.students.push(student);
@@ -403,7 +459,7 @@ async function registerStudent(body, env) {
       return json({ error: 'That username is already registered.' }, 409);
     }
     if (error?.message?.includes('users.organization_id, users.student_id')) {
-      return json({ error: 'A student account already exists for this profile.' }, 409);
+      return json({ error: 'That student ID is already registered.' }, 409);
     }
     console.error('Student registration failed:', error);
     return json({ error: 'The student account and profile could not be created.' }, 500);
@@ -440,17 +496,1113 @@ async function login(body, env) {
   if (!user || !(await verifyPassword(password, user.password_hash))) {
     return json({ error: 'Username or password is incorrect.' }, 401);
   }
-  return json({ token: await issueToken(user, env.JWT_SECRET), ...authUser(user) });
+  if (await isDisabled(env, user.id)) {
+    return json({ error: 'This account has been turned off. Please ask the admin.' }, 403);
+  }
+  return json({
+    token: await issueToken(user, env.JWT_SECRET),
+    ...authUser(user),
+    avatar: await avatarOf(env, user.id),
+  });
+}
+
+// A missing avatar column (migration not applied yet) must never break sign-in.
+async function avatarOf(env, userId) {
+  try {
+    const row = await env.DB.prepare('SELECT avatar FROM users WHERE id = ?')
+      .bind(userId)
+      .first();
+    return row?.avatar ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveAvatar(request, user, env) {
+  const body = await readJson(request);
+  const image = body?.image;
+  if (
+    typeof image !== 'string' ||
+    image.length > MAX_AVATAR_LENGTH ||
+    !AVATAR_PATTERN.test(image)
+  ) {
+    return json(
+      { error: 'Choose a JPEG, PNG, or WebP picture (it is shrunk automatically).' },
+      400,
+    );
+  }
+  try {
+    await env.DB.prepare('UPDATE users SET avatar = ? WHERE id = ?')
+      .bind(image, user.id)
+      .run();
+  } catch (error) {
+    console.error('Avatar save failed:', error);
+    return json({ error: 'The profile picture could not be saved yet. Try again later.' }, 500);
+  }
+  return json({ avatar: image });
+}
+
+async function removeAvatar(user, env) {
+  try {
+    await env.DB.prepare('UPDATE users SET avatar = NULL WHERE id = ?')
+      .bind(user.id)
+      .run();
+  } catch (error) {
+    console.error('Avatar removal failed:', error);
+    return json({ error: 'The profile picture could not be removed yet.' }, 500);
+  }
+  return json({ avatar: null });
+}
+
+// Staff can see a student's photo (to check who they are scanning); students see their own.
+async function studentAvatar(user, env, studentId) {
+  if (user.role === 'student' && user.student_id !== studentId) {
+    return json({ error: 'You can only view your own profile picture.' }, 403);
+  }
+  let row = null;
+  try {
+    row = await env.DB.prepare(
+      'SELECT avatar FROM users WHERE organization_id = ? AND student_id = ?',
+    )
+      .bind(user.organization_id, studentId)
+      .first();
+  } catch {
+    row = null;
+  }
+  return json({ avatar: row?.avatar ?? null });
+}
+
+async function freshSession(env, userId) {
+  const fresh = await env.DB.prepare(
+    'SELECT id, username, organization_id, role, student_id, auth_version FROM users WHERE id = ?',
+  )
+    .bind(userId)
+    .first();
+  return {
+    token: await issueToken(fresh, env.JWT_SECRET),
+    ...authUser(fresh),
+    avatar: await avatarOf(env, userId),
+  };
+}
+
+async function checkCurrentPassword(env, userId, password) {
+  const row = await env.DB.prepare('SELECT password_hash FROM users WHERE id = ?')
+    .bind(userId)
+    .first();
+  return (
+    typeof password === 'string' &&
+    !!row &&
+    (await verifyPassword(password, row.password_hash))
+  );
+}
+
+// Everyone can change their own password. Other sessions are signed out.
+async function changeOwnPassword(request, user, env) {
+  const body = await readJson(request);
+  if (!validPassword(body?.newPassword)) {
+    return json({ error: 'The new password must be 8–128 characters.' }, 400);
+  }
+  if (!(await checkCurrentPassword(env, user.id, body?.currentPassword))) {
+    return json({ error: 'Your current password is incorrect.' }, 403);
+  }
+  if (body.newPassword === body.currentPassword) {
+    return json({ error: 'Choose a password that is different from the current one.' }, 400);
+  }
+  await env.DB.prepare(
+    'UPDATE users SET password_hash = ?, auth_version = auth_version + 1 WHERE id = ?',
+  )
+    .bind(await hashPassword(body.newPassword), user.id)
+    .run();
+  await audit(env, user, 'password_changed', 'Changed their own password');
+  return json(await freshSession(env, user.id));
+}
+
+// Everyone can change their own username (their current password is required).
+async function changeOwnUsername(request, user, env) {
+  const body = await readJson(request);
+  const username = typeof body?.username === 'string' ? body.username.trim() : '';
+  if (!validUsername(username)) {
+    return json(
+      { error: 'Username must be 3–64 characters: letters, numbers, dots, dashes, or underscores.' },
+      400,
+    );
+  }
+  if (username === user.username) {
+    return json({ error: 'That is already your username.' }, 400);
+  }
+  if (!(await checkCurrentPassword(env, user.id, body?.currentPassword))) {
+    return json({ error: 'Your current password is incorrect.' }, 403);
+  }
+  try {
+    await env.DB.prepare('UPDATE users SET username = ? WHERE id = ?')
+      .bind(username, user.id)
+      .run();
+  } catch (error) {
+    if (error?.message?.includes('UNIQUE constraint failed: users.username')) {
+      return json({ error: 'That username is already taken.' }, 409);
+    }
+    console.error('Username change failed:', error);
+    return json({ error: 'The username could not be changed.' }, 500);
+  }
+  await audit(env, user, 'username_changed', `Changed username from ${user.username} to ${username}`);
+  return json(await freshSession(env, user.id));
+}
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// Step 1: the student asks to change their number. The code is texted to the NEW
+// number from the student's own phone, and typed back in to confirm (step 2).
+async function requestContactChange(request, user, env) {
+  if (user.role !== 'student') {
+    return json({ error: 'Only student accounts have a contact number to change.' }, 403);
+  }
+  const body = await readJson(request);
+  const mobile = normalizedMobile(body?.mobile);
+  if (!mobile) {
+    return json({ error: 'Contact number must be numbers only: 11 digits starting with 09, such as 09123456789.' }, 400);
+  }
+  if (!(await checkCurrentPassword(env, user.id, body?.currentPassword))) {
+    return json({ error: 'Your current password is incorrect.' }, 403);
+  }
+  const workspace = await env.DB.prepare(
+    'SELECT state_json FROM workspace_state WHERE organization_id = ?',
+  )
+    .bind(user.organization_id)
+    .first();
+  const student = JSON.parse(workspace?.state_json ?? '{"students":[]}').students?.find(
+    (item) => item.id === user.student_id,
+  );
+  if (student?.mobile === mobile) {
+    return json({ error: 'That is already your contact number.' }, 400);
+  }
+  let existing = null;
+  try {
+    existing = await env.DB.prepare('SELECT created_at FROM contact_changes WHERE user_id = ?')
+      .bind(user.id)
+      .first();
+  } catch {
+    return json({ error: 'Changing the contact number is not available yet. Try again later.' }, 503);
+  }
+  if (existing && Date.now() - Date.parse(existing.created_at) < CONTACT_RESEND_MS) {
+    return json({ error: 'Please wait a minute before asking for another code.' }, 429);
+  }
+  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+  const now = new Date();
+  await env.DB.prepare(
+    `INSERT INTO contact_changes (user_id, mobile, code_hash, expires_at, attempts, created_at)
+     VALUES (?, ?, ?, ?, 0, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       mobile = excluded.mobile, code_hash = excluded.code_hash,
+       expires_at = excluded.expires_at, attempts = 0, created_at = excluded.created_at`,
+  )
+    .bind(
+      user.id,
+      mobile,
+      await sha256Hex(`${user.id}:${mobile}:${code}`),
+      new Date(now.getTime() + CONTACT_CODE_TTL_MS).toISOString(),
+      now.toISOString(),
+    )
+    .run();
+  return json({ code, mobile, expiresInSeconds: CONTACT_CODE_TTL_MS / 1000 });
+}
+
+async function confirmContactChange(request, user, env) {
+  if (user.role !== 'student') {
+    return json({ error: 'Only student accounts have a contact number to change.' }, 403);
+  }
+  const body = await readJson(request);
+  const code = typeof body?.code === 'string' ? body.code.trim() : '';
+  if (!/^\d{6}$/.test(code)) {
+    return json({ error: 'Enter the 6-digit code.' }, 400);
+  }
+  let pending = null;
+  try {
+    pending = await env.DB.prepare(
+      'SELECT mobile, code_hash, expires_at, attempts FROM contact_changes WHERE user_id = ?',
+    )
+      .bind(user.id)
+      .first();
+  } catch {
+    return json({ error: 'Changing the contact number is not available yet. Try again later.' }, 503);
+  }
+  const discard = () =>
+    env.DB.prepare('DELETE FROM contact_changes WHERE user_id = ?').bind(user.id).run();
+  if (!pending) return json({ error: 'Request a new code first.' }, 400);
+  if (Date.parse(pending.expires_at) < Date.now()) {
+    await discard();
+    return json({ error: 'That code has expired. Request a new one.' }, 400);
+  }
+  if (pending.attempts >= CONTACT_MAX_ATTEMPTS) {
+    await discard();
+    return json({ error: 'Too many wrong codes. Request a new code.' }, 429);
+  }
+  if ((await sha256Hex(`${user.id}:${pending.mobile}:${code}`)) !== pending.code_hash) {
+    await env.DB.prepare('UPDATE contact_changes SET attempts = attempts + 1 WHERE user_id = ?')
+      .bind(user.id)
+      .run();
+    return json({ error: 'That code is not correct.' }, 400);
+  }
+  let saved = false;
+  for (let attempt = 0; attempt < 3 && !saved; attempt += 1) {
+    const workspace = await env.DB.prepare(
+      'SELECT revision, state_json FROM workspace_state WHERE organization_id = ?',
+    )
+      .bind(user.organization_id)
+      .first();
+    if (!workspace) return json({ error: 'The school workspace was not found.' }, 503);
+    const state = JSON.parse(workspace.state_json);
+    const student = state.students?.find((item) => item.id === user.student_id);
+    if (!student) return json({ error: 'Your student profile was not found.' }, 404);
+    student.mobile = pending.mobile;
+    const result = await env.DB.prepare(
+      `UPDATE workspace_state
+       SET revision = revision + 1, state_json = ?, updated_at = ?
+       WHERE organization_id = ? AND revision = ?`,
+    )
+      .bind(JSON.stringify(state), new Date().toISOString(), user.organization_id, workspace.revision)
+      .run();
+    saved = result.meta.changes === 1;
+  }
+  if (!saved) return json({ error: 'The workspace changed. Please try again.' }, 409);
+  await discard();
+  await audit(env, user, 'contact_changed', `Changed contact number to ${pending.mobile}`);
+  return json({ mobile: pending.mobile });
+}
+
+async function isDisabled(env, userId) {
+  try {
+    const row = await env.DB.prepare('SELECT disabled FROM users WHERE id = ?')
+      .bind(userId)
+      .first();
+    return !!row?.disabled;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------- activity log ----------------
+async function audit(env, actor, action, summary) {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO audit_log
+        (id, organization_id, at, actor_id, actor_name, actor_role, action, summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        actor.organization_id,
+        new Date().toISOString(),
+        actor.id ?? null,
+        actor.username ?? 'unknown',
+        actor.role ?? 'unknown',
+        action,
+        String(summary).slice(0, 300),
+      )
+      .run();
+  } catch {
+    // The log is best effort; it must never break the action itself.
+  }
+}
+
+// Works out what changed in a saved workspace and writes one log line for each.
+async function auditWorkspaceChange(env, user, before, after) {
+  const lines = [];
+  const students = new Map((after.students ?? []).map((item) => [item.id, item]));
+  const eventName = (id) =>
+    (after.events ?? []).find((item) => item.id === id)?.name ??
+    (before.events ?? []).find((item) => item.id === id)?.name ??
+    id;
+  const earlier = new Map((before.events ?? []).map((item) => [item.id, item]));
+  for (const event of after.events ?? []) {
+    const old = earlier.get(event.id);
+    if (!old) {
+      lines.push(['event_created', `Created the event "${event.name}" (${event.approvalStatus ?? 'approved'})`]);
+      continue;
+    }
+    const was = old.approvalStatus ?? 'approved';
+    const now = event.approvalStatus ?? 'approved';
+    if (was !== now) {
+      const verb = { approved: 'Approved', rejected: 'Rejected', pending: 'Resubmitted' }[now] ?? now;
+      const reason = now === 'rejected' && event.rejectionReason ? ` (${event.rejectionReason})` : '';
+      lines.push([`event_${now}`, `${verb} the event "${event.name}"${reason}`]);
+    }
+    if (!!old.cancelled !== !!event.cancelled) {
+      lines.push([
+        event.cancelled ? 'event_cancelled' : 'event_reinstated',
+        `${event.cancelled ? 'Cancelled' : 'Reinstated'} the event "${event.name}"`,
+      ]);
+    } else if (
+      old.date !== event.date ||
+      old.startTime !== event.startTime ||
+      old.endTime !== event.endTime ||
+      old.venue !== event.venue ||
+      old.name !== event.name
+    ) {
+      lines.push(['event_edited', `Changed the details of "${event.name}"`]);
+    }
+  }
+  const knownAttendance = new Map((before.attendance ?? []).map((item) => [item.id, item]));
+  for (const record of after.attendance ?? []) {
+    const old = knownAttendance.get(record.id);
+    const who = students.get(record.studentId)?.name ?? record.studentId;
+    if (record.manual && (!old || !old.manual || old.excused !== record.excused)) {
+      lines.push([
+        record.excused ? 'attendance_excused' : 'attendance_manual',
+        record.excused
+          ? `Marked ${who} excused for "${eventName(record.eventId)}"`
+          : `Checked ${who} in/out by hand at "${eventName(record.eventId)}"`,
+      ]);
+    }
+  }
+  const nowIds = new Set((after.attendance ?? []).map((item) => item.id));
+  for (const old of before.attendance ?? []) {
+    if (old.manual && !nowIds.has(old.id)) {
+      const who = students.get(old.studentId)?.name ?? old.studentId;
+      lines.push(['attendance_undo', `Undid a by-hand entry for ${who} at "${eventName(old.eventId)}"`]);
+    }
+  }
+  const knownAnnouncements = new Set((before.announcements ?? []).map((item) => item.id));
+  for (const item of after.announcements ?? []) {
+    if (!knownAnnouncements.has(item.id)) {
+      lines.push(['announcement', `Posted the update "${item.title}"`]);
+    }
+  }
+  for (const [action, summary] of lines.slice(0, 40)) {
+    await audit(env, user, action, summary);
+  }
+}
+
+async function listAudit(request, user, env) {
+  if (user.role !== 'super_admin') {
+    return json({ error: 'Only the super admin can view the activity log.' }, 403);
+  }
+  const url = new URL(request.url);
+  const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 200);
+  const before = url.searchParams.get('before');
+  const cutoff = new Date(Date.now() - AUDIT_KEEP_DAYS * 86_400_000).toISOString();
+  try {
+    const statement = before
+      ? env.DB.prepare(
+          `SELECT id, at, actor_name AS actorName, actor_role AS actorRole, action, summary
+           FROM audit_log WHERE organization_id = ? AND at < ? ORDER BY at DESC LIMIT ?`,
+        ).bind(user.organization_id, before, limit + 1)
+      : env.DB.prepare(
+          `SELECT id, at, actor_name AS actorName, actor_role AS actorRole, action, summary
+           FROM audit_log WHERE organization_id = ? ORDER BY at DESC LIMIT ?`,
+        ).bind(user.organization_id, limit + 1);
+    const { results } = await statement.all();
+    // Old entries are dropped as the log is read.
+    await env.DB.prepare('DELETE FROM audit_log WHERE organization_id = ? AND at < ?')
+      .bind(user.organization_id, cutoff)
+      .run();
+    const entries = results.slice(0, limit);
+    return json({
+      entries,
+      next: results.length > limit ? entries[entries.length - 1].at : null,
+    });
+  } catch {
+    return json({ error: 'The activity log is not available yet. Apply the latest database update.' }, 503);
+  }
+}
+
+// ---------------- generic workspace update with retries ----------------
+async function mutateWorkspace(env, organizationId, mutate) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const row = await env.DB.prepare(
+      'SELECT revision, state_json FROM workspace_state WHERE organization_id = ?',
+    )
+      .bind(organizationId)
+      .first();
+    if (!row) return { error: 'The school workspace was not found.', status: 503 };
+    const state = JSON.parse(row.state_json);
+    const outcome = mutate(state);
+    if (outcome?.error) return outcome;
+    const result = await env.DB.prepare(
+      `UPDATE workspace_state
+       SET revision = revision + 1, state_json = ?, updated_at = ?
+       WHERE organization_id = ? AND revision = ?`,
+    )
+      .bind(JSON.stringify(state), new Date().toISOString(), organizationId, row.revision)
+      .run();
+    if (result.meta.changes === 1) return { ok: true };
+  }
+  return { error: 'The workspace changed. Please try again.', status: 409 };
+}
+
+// ---------------- turn off / delete an account (admin) ----------------
+async function findManagedUser(admin, env, username) {
+  const target = await env.DB.prepare(
+    `SELECT id, username, role, student_id FROM users
+     WHERE organization_id = ? AND username = ? COLLATE NOCASE`,
+  )
+    .bind(admin.organization_id, username)
+    .first();
+  if (!target) return { error: json({ error: 'That account was not found.' }, 404) };
+  if (target.id === admin.id) {
+    return { error: json({ error: 'You cannot change your own account here.' }, 400) };
+  }
+  if (target.role === 'super_admin') {
+    return { error: json({ error: 'The admin account cannot be turned off or deleted.' }, 400) };
+  }
+  return { target };
+}
+
+async function setUserDisabled(request, admin, env, username) {
+  const body = await readJson(request);
+  if (typeof body?.disabled !== 'boolean') {
+    return json({ error: 'Say whether the account should be turned off or on.' }, 400);
+  }
+  const { target, error } = await findManagedUser(admin, env, username);
+  if (error) return error;
+  try {
+    // A new auth version signs the person out of every phone right away.
+    await env.DB.prepare(
+      'UPDATE users SET disabled = ?, auth_version = auth_version + 1 WHERE id = ?',
+    )
+      .bind(body.disabled ? 1 : 0, target.id)
+      .run();
+  } catch {
+    return json({ error: 'Apply the latest database update first, then try again.' }, 503);
+  }
+  await audit(
+    env,
+    admin,
+    body.disabled ? 'account_disabled' : 'account_enabled',
+    `${body.disabled ? 'Turned off' : 'Turned on'} the ${target.role} account ${target.username}`,
+  );
+  return json({ username: target.username, disabled: body.disabled });
+}
+
+async function deleteManagedUser(admin, env, username) {
+  const { target, error } = await findManagedUser(admin, env, username);
+  if (error) return error;
+  if (target.role === 'student' && target.student_id) {
+    const studentId = target.student_id;
+    const outcome = await mutateWorkspace(env, admin.organization_id, (state) => {
+      state.students = (state.students ?? []).filter((item) => item.id !== studentId);
+      state.attendance = (state.attendance ?? []).filter((item) => item.studentId !== studentId);
+      state.violations = (state.violations ?? []).filter((item) => item.studentId !== studentId);
+      (state.events ?? []).forEach((event) =>
+        (event.seats ?? []).forEach((seat) => {
+          if (seat.studentId === studentId) seat.studentId = null;
+        }),
+      );
+    });
+    if (outcome.error) return json({ error: outcome.error }, outcome.status ?? 500);
+    try {
+      await env.DB.prepare('DELETE FROM excuse_requests WHERE organization_id = ? AND student_id = ?')
+        .bind(admin.organization_id, studentId)
+        .run();
+    } catch {
+      // No excuse table yet.
+    }
+  }
+  await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(target.id).run();
+  await audit(env, admin, 'account_deleted', `Deleted the ${target.role} account ${target.username}`);
+  return json({ username: target.username, deleted: true });
+}
+
+// ---------------- excuse requests ----------------
+function excuseRow(row, withPhoto = false) {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    eventName: row.event_name,
+    studentId: row.student_id,
+    studentName: row.student_name,
+    section: row.section_label,
+    reason: row.reason,
+    status: row.status,
+    reviewerNote: row.reviewer_note ?? null,
+    createdAt: row.created_at,
+    reviewedAt: row.reviewed_at ?? null,
+    reviewedBy: row.reviewed_by_name ?? null,
+    hasPhoto: !!row.photo,
+    ...(withPhoto ? { photo: row.photo ?? null } : {}),
+  };
+}
+
+async function createExcuse(request, user, env) {
+  if (user.role !== 'student') {
+    return json({ error: 'Only students can ask to be excused.' }, 403);
+  }
+  const body = await readJson(request);
+  const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
+  if (reason.length < 10 || reason.length > 500) {
+    return json({ error: 'Explain the reason in 10 to 500 characters.' }, 400);
+  }
+  const photo = body?.photo ?? null;
+  if (
+    photo !== null &&
+    (typeof photo !== 'string' ||
+      photo.length > MAX_EXCUSE_PHOTO_LENGTH ||
+      !AVATAR_PATTERN.test(photo))
+  ) {
+    return json({ error: 'The photo must be a JPEG, PNG, or WebP picture.' }, 400);
+  }
+  const workspace = await env.DB.prepare(
+    'SELECT state_json FROM workspace_state WHERE organization_id = ?',
+  )
+    .bind(user.organization_id)
+    .first();
+  const state = JSON.parse(workspace?.state_json ?? '{}');
+  const event = (state.events ?? []).find((item) => item.id === body?.eventId);
+  const student = (state.students ?? []).find((item) => item.id === user.student_id);
+  if (!event || event.approvalStatus === 'pending' || event.approvalStatus === 'rejected') {
+    return json({ error: 'That event was not found.' }, 404);
+  }
+  if (event.cancelled) {
+    return json({ error: 'That event was cancelled, so there is nothing to excuse.' }, 400);
+  }
+  if (!student || !isStudentRequired(event, student)) {
+    return json({ error: 'Your section is not required at that event.' }, 403);
+  }
+  const attended = (state.attendance ?? []).find(
+    (record) =>
+      record.eventId === event.id && record.studentId === student.id && !record.excused,
+  );
+  if (attended) {
+    return json({ error: 'You already have attendance recorded for that event.' }, 409);
+  }
+  try {
+    const existing = await env.DB.prepare(
+      `SELECT id FROM excuse_requests
+       WHERE organization_id = ? AND student_id = ? AND event_id = ?
+         AND status IN ('pending', 'approved')`,
+    )
+      .bind(user.organization_id, student.id, event.id)
+      .first();
+    if (existing) {
+      return json({ error: 'You already sent a request for that event.' }, 409);
+    }
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO excuse_requests
+        (id, organization_id, event_id, event_name, student_id, student_name,
+         section_label, reason, photo, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    )
+      .bind(
+        id,
+        user.organization_id,
+        event.id,
+        event.name,
+        student.id,
+        student.name,
+        student.section ?? '',
+        reason,
+        photo,
+        new Date().toISOString(),
+      )
+      .run();
+    await audit(env, user, 'excuse_requested', `${student.name} asked to be excused from "${event.name}"`);
+    return json({ id, status: 'pending' }, 201);
+  } catch (error) {
+    console.error('Excuse request failed:', error);
+    return json({ error: 'Excuse requests are not available yet. Try again later.' }, 503);
+  }
+}
+
+async function myExcuses(user, env) {
+  if (user.role !== 'student') return json({ excuses: [] });
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM excuse_requests WHERE organization_id = ? AND student_id = ?
+       ORDER BY created_at DESC LIMIT 100`,
+    )
+      .bind(user.organization_id, user.student_id)
+      .all();
+    return json({ excuses: results.map((row) => excuseRow(row)) });
+  } catch {
+    return json({ excuses: [] });
+  }
+}
+
+async function listExcuses(request, user, env) {
+  if (user.role !== 'super_admin') {
+    return json({ error: 'Only the super admin can review excuse requests.' }, 403);
+  }
+  const status = new URL(request.url).searchParams.get('status');
+  try {
+    const statement =
+      status === 'pending' || status === 'approved' || status === 'rejected'
+        ? env.DB.prepare(
+            `SELECT * FROM excuse_requests WHERE organization_id = ? AND status = ?
+             ORDER BY created_at DESC LIMIT 200`,
+          ).bind(user.organization_id, status)
+        : env.DB.prepare(
+            `SELECT * FROM excuse_requests WHERE organization_id = ?
+             ORDER BY created_at DESC LIMIT 200`,
+          ).bind(user.organization_id);
+    const { results } = await statement.all();
+    const pending = await env.DB.prepare(
+      `SELECT COUNT(*) AS total FROM excuse_requests
+       WHERE organization_id = ? AND status = 'pending'`,
+    )
+      .bind(user.organization_id)
+      .first();
+    return json({ excuses: results.map((row) => excuseRow(row)), pending: pending?.total ?? 0 });
+  } catch {
+    return json({ excuses: [], pending: 0 });
+  }
+}
+
+async function getExcuse(user, env, id) {
+  const row = await env.DB.prepare(
+    'SELECT * FROM excuse_requests WHERE id = ? AND organization_id = ?',
+  )
+    .bind(id, user.organization_id)
+    .first();
+  if (!row) return json({ error: 'That request was not found.' }, 404);
+  if (user.role === 'student' && row.student_id !== user.student_id) {
+    return json({ error: 'You can only view your own requests.' }, 403);
+  }
+  if (user.role === 'organizer') {
+    return json({ error: 'Only the super admin can review excuse requests.' }, 403);
+  }
+  return json(excuseRow(row, true));
+}
+
+async function cancelExcuse(user, env, id) {
+  const row = await env.DB.prepare(
+    'SELECT student_id, status FROM excuse_requests WHERE id = ? AND organization_id = ?',
+  )
+    .bind(id, user.organization_id)
+    .first();
+  if (!row || row.student_id !== user.student_id) {
+    return json({ error: 'That request was not found.' }, 404);
+  }
+  if (row.status !== 'pending') {
+    return json({ error: 'Only a request that is still waiting can be withdrawn.' }, 409);
+  }
+  await env.DB.prepare('DELETE FROM excuse_requests WHERE id = ?').bind(id).run();
+  return json({ id, withdrawn: true });
+}
+
+async function reviewExcuse(request, admin, env, id) {
+  if (admin.role !== 'super_admin') {
+    return json({ error: 'Only the super admin can review excuse requests.' }, 403);
+  }
+  const body = await readJson(request);
+  const decision = body?.decision;
+  if (decision !== 'approved' && decision !== 'rejected') {
+    return json({ error: 'Choose to approve or reject the request.' }, 400);
+  }
+  const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 200) : '';
+  if (decision === 'rejected' && !note) {
+    return json({ error: 'Tell the student why the request was rejected.' }, 400);
+  }
+  const row = await env.DB.prepare(
+    'SELECT * FROM excuse_requests WHERE id = ? AND organization_id = ?',
+  )
+    .bind(id, admin.organization_id)
+    .first();
+  if (!row) return json({ error: 'That request was not found.' }, 404);
+  if (row.status !== 'pending') {
+    return json({ error: 'That request was already reviewed.' }, 409);
+  }
+  if (decision === 'approved') {
+    // Approving records an excused absence for that student at that event.
+    const outcome = await mutateWorkspace(env, admin.organization_id, (state) => {
+      const event = (state.events ?? []).find((item) => item.id === row.event_id);
+      if (!event) return { error: 'That event no longer exists.', status: 404 };
+      state.attendance ??= [];
+      const existing = state.attendance.find(
+        (record) => record.eventId === row.event_id && record.studentId === row.student_id,
+      );
+      if (existing && !existing.excused) {
+        return { error: 'This student already has attendance for that event.', status: 409 };
+      }
+      if (!existing) {
+        state.attendance.push({
+          id: `ATT-EX-${crypto.randomUUID().slice(0, 8)}`,
+          eventId: row.event_id,
+          studentId: row.student_id,
+          timeIn: '',
+          timeOut: null,
+          durationMinutes: null,
+          status: 'Excused',
+          syncStatus: 'Synced',
+          manual: true,
+          excused: true,
+          recordedBy: admin.id,
+          recordedByName: admin.username,
+        });
+      }
+    });
+    if (outcome.error) return json({ error: outcome.error }, outcome.status ?? 500);
+  }
+  await env.DB.prepare(
+    `UPDATE excuse_requests
+     SET status = ?, reviewer_note = ?, reviewed_at = ?, reviewed_by_name = ? WHERE id = ?`,
+  )
+    .bind(decision, note || null, new Date().toISOString(), admin.username, id)
+    .run();
+  await audit(
+    env,
+    admin,
+    decision === 'approved' ? 'excuse_approved' : 'excuse_rejected',
+    `${decision === 'approved' ? 'Approved' : 'Rejected'} the excuse of ${row.student_name} for "${row.event_name}"`,
+  );
+  return json(excuseRow({ ...row, status: decision, reviewer_note: note || null, reviewed_at: new Date().toISOString(), reviewed_by_name: admin.username }));
+}
+
+// ---------------- school year and automatic promotion ----------------
+function philippineToday(env) {
+  // TODAY_OVERRIDE exists only so the logic can be tested; it is never set in production.
+  if (env.TODAY_OVERRIDE) return env.TODAY_OVERRIDE;
+  return new Date(Date.now() + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
+async function getSchoolYear(env, organizationId) {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT school_year_end AS endDate, promotion_enabled AS enabled,
+              last_promoted_for AS lastPromotedFor
+       FROM school_settings WHERE organization_id = ?`,
+    )
+      .bind(organizationId)
+      .first();
+    return {
+      endDate: row?.endDate ?? null,
+      enabled: !!row?.enabled,
+      lastPromotedFor: row?.lastPromotedFor ?? null,
+      available: true,
+    };
+  } catch {
+    return { endDate: null, enabled: false, lastPromotedFor: null, available: false };
+  }
+}
+
+// Works out who moves up a year and who graduates (4th year). Missing next-year
+// sections are planned so they can be created.
+function planPromotion(state, sections) {
+  const key = (course, year, name) => `${course}|${year}|${name}`;
+  const byId = new Map(sections.map((section) => [section.id, section]));
+  const byKey = new Map(sections.map((s) => [key(s.course, s.year_level, s.name), s]));
+  const create = [];
+  const sectionMap = new Map(); // old section id -> new id, null (graduates) or undefined (unknown)
+  const nextOf = (old) => {
+    if (sectionMap.has(old.id)) return sectionMap.get(old.id);
+    const index = YEAR_LEVELS.indexOf(old.year_level);
+    let result;
+    if (index < 0) result = undefined;
+    else if (index === YEAR_LEVELS.length - 1) result = null;
+    else {
+      const year = YEAR_LEVELS[index + 1];
+      let next = byKey.get(key(old.course, year, old.name));
+      if (!next) {
+        next = { id: crypto.randomUUID(), course: old.course, year_level: year, name: old.name };
+        byKey.set(key(old.course, year, old.name), next);
+        create.push(next);
+      }
+      result = next.id;
+    }
+    sectionMap.set(old.id, result);
+    return result;
+  };
+  const moved = [];
+  const graduates = [];
+  let skipped = 0;
+  for (const student of state.students ?? []) {
+    const old = student.sectionId ? byId.get(student.sectionId) : undefined;
+    const next = old ? nextOf(old) : undefined;
+    if (next === undefined) skipped += 1;
+    else if (next === null) graduates.push(student);
+    else moved.push({ student, nextId: next, from: old.year_level });
+  }
+  // Map every section (even empty ones), so events that name them are updated too.
+  for (const section of sections) nextOf(section);
+  const nextSectionById = new Map([...byKey.values()].map((s) => [s.id, s]));
+  const steps = YEAR_LEVELS.map((year, index) => ({
+    from: year,
+    to: YEAR_LEVELS[index + 1] ?? null,
+    students:
+      index === YEAR_LEVELS.length - 1
+        ? graduates.length
+        : moved.filter((item) => item.from === year).length,
+  }));
+  return { sectionMap, create, moved, graduates, skipped, steps, nextSectionById };
+}
+
+async function loadSections(env, organizationId) {
+  const { results } = await env.DB.prepare(
+    'SELECT id, course, year_level, name FROM sections WHERE organization_id = ?',
+  )
+    .bind(organizationId)
+    .all();
+  return results;
+}
+
+async function previewPromotion(env, organizationId) {
+  const row = await env.DB.prepare(
+    'SELECT state_json FROM workspace_state WHERE organization_id = ?',
+  )
+    .bind(organizationId)
+    .first();
+  const plan = planPromotion(JSON.parse(row?.state_json ?? '{"students":[]}'), await loadSections(env, organizationId));
+  return {
+    steps: plan.steps,
+    graduating: plan.graduates.length,
+    promoting: plan.moved.length,
+    skipped: plan.skipped,
+    newSections: plan.create.length,
+  };
+}
+
+async function runPromotion(env, organizationId, today, endDate) {
+  // 1. Make sure every next-year section exists.
+  let sections = await loadSections(env, organizationId);
+  const first = planPromotion(
+    JSON.parse(
+      (await env.DB.prepare('SELECT state_json FROM workspace_state WHERE organization_id = ?')
+        .bind(organizationId)
+        .first())?.state_json ?? '{"students":[]}',
+    ),
+    sections,
+  );
+  for (const section of first.create) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO sections (id, organization_id, course, year_level, name)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(section.id, organizationId, section.course, section.year_level, section.name)
+      .run();
+  }
+  sections = await loadSections(env, organizationId);
+
+  // 2. Keep a copy of the data before anything changes.
+  let graduates = [];
+  let summary = { promoted: 0, graduated: 0, skipped: 0 };
+  const outcome = await mutateWorkspace(env, organizationId, (state) => {
+    const plan = planPromotion(state, sections);
+    graduates = plan.graduates.map((student) => ({ id: student.id, name: student.name }));
+    const graduateIds = new Set(graduates.map((student) => student.id));
+    const label = (section) => `${section.course} ${section.year_level} ${section.name}`;
+    const nextById = new Map(sections.map((section) => [section.id, section]));
+    const remapped = (ids) =>
+      [...new Set((ids ?? []).flatMap((id) => {
+        const next = plan.sectionMap.get(id);
+        return next === null ? [] : [next ?? id];
+      }))];
+
+    // Past events keep who was required, so their history stays the same.
+    const movedIds = new Set(plan.moved.map((item) => item.student.id));
+    for (const event of state.events ?? []) {
+      if (event.date < today) {
+        if (!event.roster) {
+          const roster = {};
+          for (const student of state.students ?? []) {
+            if (graduateIds.has(student.id)) continue;
+            if (!(event.requiredSections ?? []).includes(student.sectionId ?? '')) continue;
+            (roster[student.section] ??= []).push(student.id);
+          }
+          event.roster = roster;
+        }
+      } else {
+        event.requiredSections = remapped(event.requiredSections);
+        if (event.seatingPlan?.sharedSectionIds) {
+          event.seatingPlan.sharedSectionIds = remapped(event.seatingPlan.sharedSectionIds);
+        }
+      }
+    }
+    for (const item of state.announcements ?? []) {
+      if (item.audience?.type === 'sections') {
+        item.audience.sectionIds = remapped(item.audience.sectionIds);
+      }
+    }
+    for (const { student, nextId } of plan.moved) {
+      const next = nextById.get(nextId);
+      student.yearLevel = next.year_level;
+      student.sectionId = next.id;
+      student.section = label(next);
+    }
+    state.students = (state.students ?? []).filter((student) => !graduateIds.has(student.id));
+    state.attendance = (state.attendance ?? []).filter((r) => !graduateIds.has(r.studentId));
+    state.violations = (state.violations ?? []).filter((r) => !graduateIds.has(r.studentId));
+    for (const event of state.events ?? []) {
+      for (const seat of event.seats ?? []) {
+        if (graduateIds.has(seat.studentId)) seat.studentId = null;
+      }
+      if (event.roster) {
+        for (const [section, ids] of Object.entries(event.roster)) {
+          event.roster[section] = ids.filter((id) => !graduateIds.has(id));
+        }
+      }
+    }
+    summary = { promoted: movedIds.size, graduated: graduateIds.size, skipped: plan.skipped };
+  });
+  if (outcome.error) throw new Error(outcome.error);
+
+  // 3. Remove the graduates' accounts and requests.
+  for (let index = 0; index < graduates.length; index += 50) {
+    const chunk = graduates.slice(index, index + 50).map((student) => student.id);
+    const marks = chunk.map(() => '?').join(', ');
+    await env.DB.prepare(
+      `DELETE FROM users WHERE organization_id = ? AND role = 'student' AND student_id IN (${marks})`,
+    )
+      .bind(organizationId, ...chunk)
+      .run();
+    try {
+      await env.DB.prepare(
+        `DELETE FROM excuse_requests WHERE organization_id = ? AND student_id IN (${marks})`,
+      )
+        .bind(organizationId, ...chunk)
+        .run();
+    } catch {
+      // No excuse table yet.
+    }
+  }
+  return summary;
+}
+
+async function backupWorkspace(env, organizationId, reason) {
+  const row = await env.DB.prepare('SELECT state_json FROM workspace_state WHERE organization_id = ?')
+    .bind(organizationId)
+    .first();
+  if (!row) return;
+  const { results: users } = await env.DB.prepare(
+    `SELECT id, username, role, student_id FROM users WHERE organization_id = ? AND role = 'student'`,
+  )
+    .bind(organizationId)
+    .all();
+  await env.DB.prepare(
+    `INSERT INTO workspace_backups (id, organization_id, created_at, reason, state_json, users_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(crypto.randomUUID(), organizationId, new Date().toISOString(), reason, row.state_json, JSON.stringify(users))
+    .run();
+  // Keep only the three most recent copies.
+  await env.DB.prepare(
+    `DELETE FROM workspace_backups WHERE organization_id = ? AND id NOT IN (
+       SELECT id FROM workspace_backups WHERE organization_id = ? ORDER BY created_at DESC LIMIT 3)`,
+  )
+    .bind(organizationId, organizationId)
+    .run();
+}
+
+// The daily job: promote after the school year ended, once, and only when the
+// admin turned it on and the date is recent.
+async function maybePromote(env, organizationId) {
+  const today = philippineToday(env);
+  const settings = await getSchoolYear(env, organizationId);
+  const system = { organization_id: organizationId, id: null, username: 'System', role: 'system' };
+  if (!settings.available || !settings.enabled || !settings.endDate) return { ran: false, reason: 'off' };
+  if (settings.lastPromotedFor === settings.endDate) return { ran: false, reason: 'already' };
+  if (today <= settings.endDate) return { ran: false, reason: 'not-yet' };
+  const daysLate = (Date.parse(today) - Date.parse(settings.endDate)) / 86_400_000;
+  if (daysLate > 30) {
+    await audit(env, system, 'school_year_skipped',
+      `Did not promote students: the school year ended on ${settings.endDate}, more than 30 days ago. Set a new end date.`);
+    await env.DB.prepare('UPDATE school_settings SET promotion_enabled = 0, updated_at = ? WHERE organization_id = ?')
+      .bind(new Date().toISOString(), organizationId).run();
+    return { ran: false, reason: 'too-late' };
+  }
+  // Record the run first, so a crash can never promote the same students twice.
+  await env.DB.prepare(
+    'UPDATE school_settings SET last_promoted_for = ?, updated_at = ? WHERE organization_id = ?',
+  )
+    .bind(settings.endDate, new Date().toISOString(), organizationId)
+    .run();
+  try {
+    await backupWorkspace(env, organizationId, `Before promoting students after ${settings.endDate}`);
+    const summary = await runPromotion(env, organizationId, today, settings.endDate);
+    await audit(env, system, 'school_year_promoted',
+      `School year ${settings.endDate} ended: promoted ${summary.promoted} students, deleted ${summary.graduated} graduates, skipped ${summary.skipped}.`);
+    return { ran: true, ...summary };
+  } catch (error) {
+    console.error('Promotion failed:', error);
+    await audit(env, system, 'school_year_failed',
+      `Promoting students after ${settings.endDate} failed. A backup of the data was saved first.`);
+    return { ran: false, reason: 'failed' };
+  }
+}
+
+async function runScheduled(env) {
+  const { results } = await env.DB.prepare('SELECT id FROM organizations').all();
+  for (const organization of results) {
+    try {
+      await maybePromote(env, organization.id);
+    } catch (error) {
+      console.error('Scheduled promotion failed:', error);
+    }
+  }
+}
+
+async function schoolYearSettings(user, env) {
+  const settings = await getSchoolYear(env, user.organization_id);
+  let preview = null;
+  try {
+    preview = await previewPromotion(env, user.organization_id);
+  } catch {
+    preview = null;
+  }
+  return json({ ...settings, today: philippineToday(env), preview });
+}
+
+async function saveSchoolYear(request, user, env) {
+  const body = await readJson(request);
+  const enabled = body?.enabled === true;
+  const endDate = typeof body?.endDate === 'string' ? body.endDate : null;
+  if (enabled) {
+    if (!endDate || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || Number.isNaN(Date.parse(endDate))) {
+      return json({ error: 'Choose the date the school year ends.' }, 400);
+    }
+    if (endDate < philippineToday(env)) {
+      return json({ error: 'The end date cannot be in the past.' }, 400);
+    }
+    const current = await getSchoolYear(env, user.organization_id);
+    if (current.lastPromotedFor === endDate) {
+      return json({ error: 'Students were already promoted for that date. Choose a new end date.' }, 409);
+    }
+  }
+  try {
+    await env.DB.prepare(
+      `INSERT INTO school_settings (organization_id, school_year_end, promotion_enabled, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(organization_id) DO UPDATE SET
+         school_year_end = excluded.school_year_end,
+         promotion_enabled = excluded.promotion_enabled,
+         updated_at = excluded.updated_at`,
+    )
+      .bind(user.organization_id, endDate, enabled ? 1 : 0, new Date().toISOString())
+      .run();
+  } catch {
+    return json({ error: 'Apply the latest database update first, then try again.' }, 503);
+  }
+  await audit(env, user, 'school_year_set',
+    enabled
+      ? `Turned on automatic promotion after the school year ends on ${endDate}`
+      : 'Turned off automatic promotion');
+  return json(await (await schoolYearSettings(user, env)).json());
 }
 
 async function listAccounts(user, env) {
-  const { results } = await env.DB.prepare(
-    `SELECT username, role, student_id AS studentId, created_at AS createdAt
-     FROM users WHERE organization_id = ? ORDER BY username COLLATE NOCASE`,
-  )
-    .bind(user.organization_id)
-    .all();
-  return json({ accounts: results });
+  let results;
+  try {
+    ({ results } = await env.DB.prepare(
+      `SELECT id, username, role, student_id AS studentId, created_at AS createdAt, disabled
+       FROM users WHERE organization_id = ? ORDER BY username COLLATE NOCASE`,
+    )
+      .bind(user.organization_id)
+      .all());
+  } catch {
+    // Before the latest database update there is no "disabled" column.
+    ({ results } = await env.DB.prepare(
+      `SELECT id, username, role, student_id AS studentId, created_at AS createdAt
+       FROM users WHERE organization_id = ? ORDER BY username COLLATE NOCASE`,
+    )
+      .bind(user.organization_id)
+      .all());
+  }
+  return json({
+    accounts: results.map((account) => ({ ...account, disabled: !!account.disabled })),
+  });
 }
 
 async function createAccount(request, user, env) {
@@ -487,6 +1639,7 @@ async function createAccount(request, user, env) {
     console.error('Account creation failed:', error);
     return json({ error: 'The account could not be created.' }, 500);
   }
+  await audit(env, user, 'account_created', `Created the organizer account ${username}`);
   return json({ username, role: 'organizer', studentId: null }, 201);
 }
 
@@ -507,7 +1660,75 @@ async function resetAccountPassword(request, user, env, username) {
   if (result.meta.changes === 0) {
     return json({ error: 'That account was not found in this school.' }, 404);
   }
+  await audit(env, user, 'password_reset', `Reset the password of ${username}`);
   return json({ username, passwordReset: true });
+}
+
+async function resetSharedApp(user, env) {
+  if (user.role !== 'super_admin') {
+    return json({ error: 'Only the super admin can reset the shared app.' }, 403);
+  }
+  const workspace = await env.DB.prepare(
+    'SELECT revision FROM workspace_state WHERE organization_id = ?',
+  )
+    .bind(user.organization_id)
+    .first();
+  if (!workspace) return json({ error: 'The school workspace was not found.' }, 404);
+
+  const statements = [
+    env.DB.prepare(
+      'DELETE FROM users WHERE organization_id = ? AND id <> ?',
+    ).bind(user.organization_id, user.id),
+    env.DB.prepare(
+      'DELETE FROM sections WHERE organization_id = ?',
+    ).bind(user.organization_id),
+    ...COURSES.flatMap((course) =>
+      YEAR_LEVELS.flatMap((yearLevel) =>
+        ['A', 'B'].map((name) =>
+          env.DB.prepare(
+            `INSERT INTO sections (id, organization_id, course, year_level, name)
+             VALUES (?, ?, ?, ?, ?)`,
+          ).bind(
+            crypto.randomUUID(),
+            user.organization_id,
+            course,
+            yearLevel,
+            name,
+          ),
+        ),
+      ),
+    ),
+    env.DB.prepare(
+      `UPDATE workspace_state
+       SET revision = revision + 1, state_json = ?, updated_at = ?
+       WHERE organization_id = ?`,
+    ).bind(
+      JSON.stringify(emptyWorkspace()),
+      new Date().toISOString(),
+      user.organization_id,
+    ),
+  ];
+  try {
+    await env.DB.batch(statements);
+    const updated = await env.DB.prepare(
+      'SELECT revision FROM workspace_state WHERE organization_id = ?',
+    )
+      .bind(user.organization_id)
+      .first();
+    if (!updated) return json({ error: 'The reset workspace could not be loaded.' }, 500);
+    try {
+      await env.DB.prepare('DELETE FROM excuse_requests WHERE organization_id = ?')
+        .bind(user.organization_id)
+        .run();
+    } catch {
+      // The table does not exist until the latest database update is applied.
+    }
+    await audit(env, user, 'workspace_reset', 'Deleted all shared data except the admin account');
+    return json({ revision: updated.revision });
+  } catch (error) {
+    console.error('Shared app reset failed:', error);
+    return json({ error: 'The shared app could not be reset.' }, 500);
+  }
 }
 
 function studentWorkspace(state, studentId) {
@@ -523,7 +1744,10 @@ function studentWorkspace(state, studentId) {
           ? event.seats.filter((seat) => seat.studentId === studentId)
           : [],
       })),
-    attendance: [],
+    // Students see only their own attendance records.
+    attendance: Array.isArray(state.attendance)
+      ? state.attendance.filter((record) => record.studentId === studentId)
+      : [],
     violations: [],
     messages: [],
     syncItems: [],
@@ -558,33 +1782,98 @@ function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-async function validateOrganizerWorkspace(state, nextState, user, env) {
-  if (
-    !sameJson(state.students, nextState.students) ||
-    !sameJson(state.announcements ?? [], nextState.announcements ?? [])
-  ) {
-    return 'Organizers cannot change student profiles or announcements.';
+function validAnnouncementAudience(audience) {
+  if (audience === undefined) return true;
+  if (typeof audience !== 'object' || audience === null) return false;
+  if (audience.type === 'all') return true;
+  if (audience.type === 'course') return typeof audience.course === 'string';
+  if (audience.type === 'sections') {
+    return (
+      Array.isArray(audience.sectionIds) &&
+      audience.sectionIds.length <= 500 &&
+      audience.sectionIds.every((id) => typeof id === 'string')
+    );
   }
+  return false;
+}
+
+// Organizers may post new announcements, but never edit or remove existing ones.
+function validateOrganizerAnnouncements(previous, next) {
+  const nextById = new Map(next.map((item) => [item?.id, item]));
+  if (nextById.size !== next.length) {
+    return 'The announcement list contains duplicate identifiers.';
+  }
+  for (const item of previous) {
+    const submitted = nextById.get(item.id);
+    if (!submitted || !sameJson(item, submitted)) {
+      return 'Organizers cannot edit or remove existing announcements.';
+    }
+  }
+  const previousIds = new Set(previous.map((item) => item.id));
+  for (const item of next) {
+    if (previousIds.has(item.id)) continue;
+    if (
+      typeof item?.id !== 'string' ||
+      typeof item.title !== 'string' ||
+      !item.title.trim() ||
+      item.title.length > 120 ||
+      typeof item.body !== 'string' ||
+      !item.body.trim() ||
+      item.body.length > 2000 ||
+      typeof item.createdAt !== 'string' ||
+      !validAnnouncementAudience(item.audience)
+    ) {
+      return 'An announcement is missing its title, message, or audience.';
+    }
+  }
+  return null;
+}
+
+async function validateOrganizerWorkspace(state, nextState, user, env) {
+  if (!sameJson(state.students, nextState.students)) {
+    return 'Organizers cannot change student profiles.';
+  }
+  const announcementError = validateOrganizerAnnouncements(
+    state.announcements ?? [],
+    nextState.announcements ?? [],
+  );
+  if (announcementError) return announcementError;
   const previousEvents = new Map(state.events.map((event) => [event.id, event]));
   const nextEvents = new Map(nextState.events.map((event) => [event.id, event]));
   if (nextEvents.size !== nextState.events.length || previousEvents.size !== state.events.length) {
     return 'The event list contains duplicate identifiers.';
   }
+  // Organizers may edit and resubmit only their own events that are not approved.
+  const resubmitted = new Map();
   for (const [id, event] of previousEvents) {
     const submitted = nextEvents.get(id);
-    if (
-      !submitted ||
-      !sameJson(
-        event,
-        {
-          ...submitted,
-          approvalStatus: submitted.approvalStatus ?? 'approved',
-          requiredSections: submitted.requiredSections ?? [],
-        },
-      )
-    ) {
-      return 'Organizers can create events but cannot edit or approve existing events.';
+    if (!submitted) return 'Organizers cannot delete events.';
+    const normalized = {
+      ...submitted,
+      approvalStatus: submitted.approvalStatus ?? 'approved',
+      requiredSections: submitted.requiredSections ?? [],
+    };
+    if (sameJson(event, normalized)) continue;
+    const editable =
+      event.createdBy === user.id &&
+      ['pending', 'rejected'].includes(event.approvalStatus);
+    if (!editable) {
+      return 'Organizers can only edit their own events that are not approved yet.';
     }
+    if (
+      submitted.approvalStatus !== 'pending' ||
+      !Array.isArray(submitted.requiredSections) ||
+      submitted.requiredSections.length === 0
+    ) {
+      return 'Resubmit your event as pending, with at least one required section.';
+    }
+    const { rejectionReason: _removed, ...clean } = submitted;
+    resubmitted.set(id, {
+      ...clean,
+      approvalStatus: 'pending',
+      createdBy: event.createdBy,
+      createdByName: event.createdByName,
+    });
   }
   const approvedEventIds = new Set(
     state.events
@@ -623,14 +1912,19 @@ async function validateOrganizerWorkspace(state, nextState, user, env) {
       .map((event) => [event.id, event]),
   );
   for (const message of newMessages) {
-    const event = approvedEvents.get(message.eventId);
-    const eligibleStudent = event && state.students.some(
-      (student) =>
-        student.mobile === message.recipientNumber &&
-        (event.requiredSections ?? []).includes(student.sectionId ?? ''),
-    );
+    // Announcement texts have no event: they may go to any registered student.
+    const event = message.eventId ? approvedEvents.get(message.eventId) : null;
+    const eligibleStudent = message.eventId
+      ? event && state.students.some(
+          (student) =>
+            student.mobile === message.recipientNumber &&
+            isStudentRequired(event, student),
+        )
+      : state.students.some(
+          (student) => student.mobile === message.recipientNumber,
+        );
     if (!eligibleStudent) {
-      return 'SMS can only be sent to students in the selected sections of approved events.';
+      return 'SMS can only be sent to registered students, or to the selected sections of approved events.';
     }
   }
   const additions = nextState.events.filter((event) => !previousEvents.has(event.id));
@@ -646,7 +1940,11 @@ async function validateOrganizerWorkspace(state, nextState, user, env) {
   if (additions.some((event) => !event.id || event.approvalStatus !== 'pending')) {
     return 'Organizer-created events must be pending super-admin approval.';
   }
-  const sectionIds = [...new Set(additions.flatMap((event) => event.requiredSections))];
+  const sectionIds = [
+    ...new Set(
+      [...additions, ...resubmitted.values()].flatMap((event) => event.requiredSections),
+    ),
+  ];
   if (sectionIds.some((id) => typeof id !== 'string')) {
     return 'An event contains an invalid required section.';
   }
@@ -661,12 +1959,20 @@ async function validateOrganizerWorkspace(state, nextState, user, env) {
       return 'An event refers to a section that is no longer available.';
     }
   }
+  // Remember which organizer recorded each new attendance entry.
+  const knownAttendance = new Set(state.attendance.map((record) => record.id));
+  nextState.attendance = nextState.attendance.map((record) =>
+    knownAttendance.has(record.id)
+      ? record
+      : { ...record, recordedBy: user.id, recordedByName: user.username },
+  );
   nextState.events = [
-    ...state.events,
+    ...state.events.map((event) => resubmitted.get(event.id) ?? event),
     ...additions.map((event) => ({
       ...event,
       approvalStatus: 'pending',
       createdBy: user.id,
+      createdByName: user.username,
     })),
   ];
   return null;
@@ -748,6 +2054,12 @@ async function workspace(request, user, env) {
       { error: 'This workspace changed on another device.', revision: current.revision, state: JSON.parse(current.state_json) },
       409,
     );
+  }
+  try {
+    const before = JSON.parse(current.state_json);
+    await auditWorkspaceChange(env, user, before, body.state);
+  } catch {
+    // Logging must never block saving.
   }
   return json({ revision: body.revision + 1 });
 }
@@ -847,6 +2159,7 @@ async function saveSection(request, user, env, sectionId = null) {
     console.error('Section save failed:', error);
     return json({ error: 'The section could not be saved.' }, 500);
   }
+  await audit(env, user, 'section_saved', `Saved the section ${course} ${yearLevel} ${name}`);
   return json({ id: sectionId, course, yearLevel, name });
 }
 
@@ -878,7 +2191,73 @@ async function handle(request, env) {
   const user = authenticated.user;
 
   if (request.method === 'GET' && path === '/api/auth/me') {
-    return json(authUser(user));
+    return json({ ...authUser(user), avatar: await avatarOf(env, user.id) });
+  }
+  if (path === '/api/account/password' && request.method === 'POST') {
+    return changeOwnPassword(request, user, env);
+  }
+  const adminUserMatch = path.match(/^\/api\/admin\/users\/([^/]+)(?:\/(disabled))?$/);
+  if (adminUserMatch) {
+    if (user.role !== 'super_admin') {
+      return json({ error: 'Only the super admin can manage accounts.' }, 403);
+    }
+    const username = decodeURIComponent(adminUserMatch[1]);
+    if (request.method === 'POST' && adminUserMatch[2] === 'disabled') {
+      return setUserDisabled(request, user, env, username);
+    }
+    if (request.method === 'DELETE' && !adminUserMatch[2]) {
+      return deleteManagedUser(user, env, username);
+    }
+  }
+  if (path === '/api/admin/school-year') {
+    if (user.role !== 'super_admin') {
+      return json({ error: 'Only the super admin can manage the school year.' }, 403);
+    }
+    if (request.method === 'GET') return schoolYearSettings(user, env);
+    if (request.method === 'PUT') return saveSchoolYear(request, user, env);
+  }
+  if (path === '/api/admin/audit' && request.method === 'GET') {
+    return listAudit(request, user, env);
+  }
+  if (path === '/api/excuses' && request.method === 'POST') {
+    return createExcuse(request, user, env);
+  }
+  if (path === '/api/excuses' && request.method === 'GET') {
+    return listExcuses(request, user, env);
+  }
+  if (path === '/api/excuses/mine' && request.method === 'GET') {
+    return myExcuses(user, env);
+  }
+  const excuseMatch = path.match(/^\/api\/excuses\/([^/]+)(?:\/(review))?$/);
+  if (excuseMatch) {
+    const excuseId = decodeURIComponent(excuseMatch[1]);
+    if (request.method === 'POST' && excuseMatch[2] === 'review') {
+      return reviewExcuse(request, user, env, excuseId);
+    }
+    if (request.method === 'GET' && !excuseMatch[2]) return getExcuse(user, env, excuseId);
+    if (request.method === 'DELETE' && !excuseMatch[2]) return cancelExcuse(user, env, excuseId);
+  }
+  if (path === '/api/account/contact/request' && request.method === 'POST') {
+    return requestContactChange(request, user, env);
+  }
+  if (path === '/api/account/contact/confirm' && request.method === 'POST') {
+    return confirmContactChange(request, user, env);
+  }
+  if (path === '/api/account/username' && request.method === 'POST') {
+    return changeOwnUsername(request, user, env);
+  }
+  if (path === '/api/profile/avatar' && request.method === 'PUT') {
+    return saveAvatar(request, user, env);
+  }
+  if (path === '/api/profile/avatar' && request.method === 'DELETE') {
+    return removeAvatar(user, env);
+  }
+  const avatarMatch = path.match(/^\/api\/students\/([^/]+)\/avatar$/);
+  if (avatarMatch && request.method === 'GET') {
+    return studentAvatar(user, env, decodeURIComponent(avatarMatch[1]));
+  }
+  if (request.method === 'DELETE' && path === '/api/admin/reset') {
+    return resetSharedApp(user, env);
   }
   if (path === '/api/workspace' && ['GET', 'PUT'].includes(request.method)) {
     return workspace(request, user, env);
@@ -915,6 +2294,10 @@ async function handle(request, env) {
 }
 
 export default {
+  // The daily trigger (see wrangler.toml).
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(runScheduled(env));
+  },
   async fetch(request, env) {
     const headers = corsHeaders(request, env);
     let response;

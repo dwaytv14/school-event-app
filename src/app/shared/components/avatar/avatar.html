@@ -1,0 +1,19 @@
+@if (src()) {
+<img
+  class="avatar-image"
+  [src]="src()"
+  [alt]="name() ? name() + ' profile picture' : 'Profile picture'"
+  [style.width.px]="size()"
+  [style.height.px]="size()"
+/>
+} @else {
+<span
+  class="avatar-initials"
+  role="img"
+  [attr.aria-label]="name() ? name() + ' (no profile picture)' : 'No profile picture'"
+  [style.width.px]="size()"
+  [style.height.px]="size()"
+  [style.font-size.px]="size() * 0.38"
+  >{{ initials() || '?' }}</span
+>
+}

@@ -12,6 +12,11 @@ const TOKEN_KEY = 'school-event-auth-token-v1';
 const USERNAME_KEY = 'school-event-auth-username-v1';
 const ROLE_KEY = 'school-event-auth-role-v1';
 const STUDENT_ID_KEY = 'school-event-auth-student-id-v1';
+const REMEMBER_KEY = 'school-event-auth-remember-v1';
+const LAST_USERNAME_KEY = 'school-event-last-username-v1';
+const AVATAR_KEY_PREFIX = 'school-event-avatar-v1:';
+const USER_ID_KEY = 'school-event-auth-user-id-v1';
+const SESSION_KEYS = [TOKEN_KEY, USERNAME_KEY, ROLE_KEY, STUDENT_ID_KEY, USER_ID_KEY];
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
@@ -21,16 +26,43 @@ export class AuthService {
   readonly username = signal('');
   readonly role = signal<UserRole | null>(null);
   readonly studentId = signal<string | null>(null);
+  /** The account's id, used to tell which events this organizer created. */
+  readonly userId = signal<string | null>(null);
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
   readonly offline = signal(false);
+  /** The signed-in user's profile picture (a small data URL), if they set one. */
+  readonly avatar = signal<string | null>(null);
 
   private token = '';
+  /**
+   * True: the session is kept on the device and survives closing the app.
+   * False: it lives only while the app is open (sessionStorage), so closing
+   * the app signs the user out. Older installs have no flag and keep their
+   * existing signed-in session.
+   */
+  private remember = localStorage.getItem(REMEMBER_KEY) !== '0';
+
+  /** The username from the last "keep me signed in" login. */
+  lastUsername(): string {
+    return localStorage.getItem(LAST_USERNAME_KEY) ?? '';
+  }
+
+  /** Whether the checkbox was ticked last time. */
+  rememberPreference(): boolean {
+    return localStorage.getItem(REMEMBER_KEY) === '1';
+  }
+
+  private store(): Storage {
+    return this.remember ? localStorage : sessionStorage;
+  }
 
   async initialize(): Promise<void> {
-    const token = localStorage.getItem(TOKEN_KEY);
-    const savedUsername = localStorage.getItem(USERNAME_KEY);
-    const savedRole = localStorage.getItem(ROLE_KEY);
+    this.remember = localStorage.getItem(REMEMBER_KEY) !== '0';
+    const storage = this.store();
+    const token = storage.getItem(TOKEN_KEY);
+    const savedUsername = storage.getItem(USERNAME_KEY);
+    const savedRole = storage.getItem(ROLE_KEY);
     if (!token || !savedUsername) return;
 
     this.token = token;
@@ -42,7 +74,8 @@ export class AuthService {
     ) {
       this.role.set(savedRole);
     }
-    this.studentId.set(localStorage.getItem(STUDENT_ID_KEY));
+    this.studentId.set(storage.getItem(STUDENT_ID_KEY));
+    this.userId.set(storage.getItem(USER_ID_KEY));
     try {
       const user = await this.api.currentUser(token);
       this.setIdentity(user);
@@ -66,20 +99,42 @@ export class AuthService {
     }
   }
 
-  async login(username: string, password: string): Promise<void> {
-    await this.authenticate(() => this.api.login(username, password), true);
+  async login(
+    username: string,
+    password: string,
+    keepSignedIn = false,
+  ): Promise<void> {
+    await this.authenticate(
+      () => this.api.login(username, password),
+      true,
+      undefined,
+      keepSignedIn,
+    );
   }
 
   async register(
     username: string,
     password: string,
     student: StudentRegistration,
+    keepSignedIn = false,
   ): Promise<void> {
     await this.authenticate(
       () => this.api.register(username, password, student),
       true,
       'Internet is required to create an account.',
+      keepSignedIn,
     );
+  }
+
+  /** Takes over a fresh session returned after a password or username change. */
+  applySession(result: AuthenticationResponse): void {
+    this.token = result.token;
+    this.store().setItem(TOKEN_KEY, result.token);
+    this.store().setItem(USERNAME_KEY, result.username);
+    if (this.rememberPreference()) {
+      localStorage.setItem(LAST_USERNAME_KEY, result.username);
+    }
+    this.setIdentity(result);
   }
 
   getToken(): string {
@@ -87,7 +142,7 @@ export class AuthService {
   }
 
   hasSavedSession(): boolean {
-    return !!localStorage.getItem(TOKEN_KEY);
+    return !!this.store().getItem(TOKEN_KEY);
   }
 
   signOut(): void {
@@ -95,18 +150,22 @@ export class AuthService {
     this.username.set('');
     this.role.set(null);
     this.studentId.set(null);
+    this.userId.set(null);
     this.authenticated.set(false);
     this.offline.set(false);
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USERNAME_KEY);
-    localStorage.removeItem(ROLE_KEY);
-    localStorage.removeItem(STUDENT_ID_KEY);
+    // The saved username and checkbox choice stay, so the sign-in form can
+    // be pre-filled after a manual sign out.
+    for (const key of SESSION_KEYS) {
+      localStorage.removeItem(key);
+      sessionStorage.removeItem(key);
+    }
   }
 
   private async authenticate(
     request: () => Promise<AuthenticationResponse>,
     firstLogin = false,
     offlineMessage = 'Internet is required for your first login.',
+    keepSignedIn = false,
   ): Promise<void> {
     this.busy.set(true);
     this.error.set(null);
@@ -114,8 +173,18 @@ export class AuthService {
     try {
       const result = await request();
       this.token = result.token;
-      localStorage.setItem(TOKEN_KEY, result.token);
-      localStorage.setItem(USERNAME_KEY, result.username);
+      this.remember = keepSignedIn;
+      localStorage.setItem(REMEMBER_KEY, keepSignedIn ? '1' : '0');
+      if (keepSignedIn) {
+        localStorage.setItem(LAST_USERNAME_KEY, result.username);
+      } else {
+        localStorage.removeItem(LAST_USERNAME_KEY);
+      }
+      // Keep the session in exactly one place.
+      const other = keepSignedIn ? sessionStorage : localStorage;
+      for (const key of SESSION_KEYS) other.removeItem(key);
+      this.store().setItem(TOKEN_KEY, result.token);
+      this.store().setItem(USERNAME_KEY, result.username);
       this.setIdentity(result);
     } catch (error) {
       const message =
@@ -131,18 +200,42 @@ export class AuthService {
     }
   }
 
+  /** Updates the picture and keeps a copy so it still shows offline. */
+  setAvatar(avatar: string | null): void {
+    this.avatar.set(avatar);
+    const key = AVATAR_KEY_PREFIX + this.username().toLowerCase();
+    try {
+      if (avatar) localStorage.setItem(key, avatar);
+      else localStorage.removeItem(key);
+    } catch {
+      // The picture is a convenience; storage may be full.
+    }
+  }
+
   private setIdentity(user: Omit<AuthenticationResponse, 'token'>): void {
     this.username.set(user.username);
+    if (user.avatar !== undefined) {
+      this.setAvatar(user.avatar);
+    } else {
+      this.avatar.set(
+        localStorage.getItem(AVATAR_KEY_PREFIX + user.username.toLowerCase()),
+      );
+    }
     this.role.set(user.role);
     this.studentId.set(user.studentId);
     this.authenticated.set(true);
     this.offline.set(false);
-    localStorage.setItem(USERNAME_KEY, user.username);
-    localStorage.setItem(ROLE_KEY, user.role);
+    const storage = this.store();
+    if (user.id) {
+      this.userId.set(user.id);
+      storage.setItem(USER_ID_KEY, user.id);
+    }
+    storage.setItem(USERNAME_KEY, user.username);
+    storage.setItem(ROLE_KEY, user.role);
     if (user.studentId) {
-      localStorage.setItem(STUDENT_ID_KEY, user.studentId);
+      storage.setItem(STUDENT_ID_KEY, user.studentId);
     } else {
-      localStorage.removeItem(STUDENT_ID_KEY);
+      storage.removeItem(STUDENT_ID_KEY);
     }
   }
 }

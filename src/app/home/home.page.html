@@ -18,72 +18,85 @@
   <form class="auth-form" (ngSubmit)="submitAuth()">
     <h2>{{ authMode() === 'register' ? 'Create student account' : 'Sign in' }}</h2>
     <p class="muted">
-      {{ authMode() === 'register' ? 'Create your student account to get your QR pass.' : 'Sign in with your student or organizer account.' }}
+    {{ authMode() === 'register' ? 'Enter your school details to create your student account and QR pass.' : 'Sign in with your student or organizer account.' }}
     </p>
     @if (authMode() === 'register') {
-    <label
-      >Full name<input
-        name="signupName"
+  <label>Student ID
+    <span class="student-id-field"><span>PPY-</span><input
+      name="signupStudentNumber"
+      type="text"
+      inputmode="numeric"
+      autocomplete="off"
+      pattern="[0-9]+"
+      maxlength="12"
+      required
+      aria-label="Student ID number"
+      title="Enter numbers only after PPY-"
+      [(ngModel)]="signupForm.studentNumber"
+      (input)="normalizeStudentNumber($event)"
+    /></span>
+  </label>
+  <label
+    >Full name<input
+      name="signupName"
         autocomplete="name"
+        inputmode="text"
+        autocapitalize="words"
         required
         maxlength="120"
+        pattern="[A-Za-zÀ-ÖØ-öø-ÿĀ-žÑñ ]+"
+        title="Letters and spaces only"
+        placeholder="Juan Dela Cruz"
         [(ngModel)]="signupForm.name"
+        (input)="normalizeName($event)"
     /></label>
     <label
       >Course<select
         name="signupCourse"
         required
-        [(ngModel)]="signupForm.course"
-        (ngModelChange)="signupCourseChanged()"
+        [ngModel]="signupForm.course"
+        (ngModelChange)="signupForm.course = $event; signupForm.yearLevel = ''; signupForm.section = ''"
       >
-        @for (course of courses; track course) {
+        <option value="" disabled>Select your course</option>
+        @for (course of availableCourses(); track course) {
         <option [value]="course">{{ course }}</option>
         }
       </select></label
     >
     <label
-      >Year level<select
+      >Year<select
         name="signupYear"
         required
-        [disabled]="signupYears().length === 0"
-        [(ngModel)]="signupForm.yearLevel"
-        (ngModelChange)="signupYearChanged()"
+        [ngModel]="signupForm.yearLevel"
+        (ngModelChange)="signupForm.yearLevel = $event; signupForm.section = ''"
       >
+        <option value="" disabled>Select your year</option>
         @for (year of signupYears(); track year) {
         <option [value]="year">{{ year }}</option>
         }
       </select></label
     >
-    @if (signupSections().length === 1) {
-    <label>Section<input [value]="signupSections()[0].name" readonly /></label>
-    } @else {
     <label
-      >Section<select
-        name="signupSection"
-        required
-        [disabled]="signupSections().length === 0"
-        [(ngModel)]="signupForm.sectionId"
-      >
-        <option value="" disabled>Select a section</option>
-        @for (section of signupSections(); track section.id) {
-        <option [value]="section.id">{{ section.name }}</option>
+      >Section<select name="signupSection" required [(ngModel)]="signupForm.section">
+        <option value="" disabled>Select your section</option>
+        @for (section of signupSectionNames(); track section) {
+        <option [value]="section">{{ section }}</option>
         }
       </select></label
     >
-    }
-    @if (signupSections().length === 0) {
-    <p class="muted">No sections are available for this course and year yet. Contact the super admin.</p>
-    }
     <label
-      >Mobile number<input
+      >Contact number<input
         name="signupMobile"
         type="tel"
+        inputmode="numeric"
         autocomplete="tel"
+        maxlength="11"
         placeholder="09XXXXXXXXX"
-        pattern="(09[0-9]{9}|\+639[0-9]{9})"
-        title="Enter a Philippine mobile number, e.g. 09123456789 or +639123456789"
+        pattern="09[0-9]{9}"
+        title="Numbers only: 11 digits starting with 09, for example 09123456789"
         required
         [(ngModel)]="signupForm.mobile"
+        (input)="normalizeMobile($event)"
     /></label>
     }
     <label
@@ -105,6 +118,12 @@
         maxlength="128"
         [(ngModel)]="authPassword"
     /></label>
+    @if (authMode() === 'login') {
+    <label class="remember-row">
+      <input type="checkbox" name="keepSignedIn" [(ngModel)]="keepSignedIn" />
+      <span>Keep me signed in</span>
+    </label>
+    }
     @if (auth.error(); as error) {
     <p class="scan-result rejected" role="alert">{{ error }}</p>
     }
@@ -134,6 +153,13 @@
     >@if (headerGreeting()) {
     <span class="header-greeting">{{ headerGreeting() }}</span>
     }<button
+      class="header-avatar"
+      type="button"
+      aria-label="Profile photo options"
+      (click)="openPhotoMenu()"
+    >
+      <app-avatar [src]="auth.avatar()" [name]="auth.username()" [size]="34" />
+    </button><button
       class="network-pill"
       [class.offline-pill]="!isOnline()"
       type="button"
@@ -144,7 +170,7 @@
       <i></i>{{ isOnline() ? 'Online' : 'Offline' }}
     </button>
   </header>
-  <main class="screen-content" (touchstart)="capturePullStart($event)" (touchend)="completePullRefresh($event)">
+  <main class="screen-content" id="main-content" (touchstart)="capturePullStart($event)" (touchend)="completePullRefresh($event)">
     @if (!activeEvent() && requiresEvent()) {
     <section class="empty-state setup-empty">
       <p class="eyebrow">EVENT SETUP</p>
@@ -157,26 +183,16 @@
       }
     </section>
     } @else if (page() === 'home') {
-    @if (activeEvent(); as event) {
+    @if (state().role === 'super_admin') {
     <section class="welcome-row">
       <div>
-        <p class="eyebrow">
-          {{ state().role === 'super_admin' ? 'ADMIN CONSOLE' : state().role === 'organizer' ? 'ORGANIZER DESK' : 'STUDENT PASS' }}
-        </p>
-        <h1>
-          {{ state().role !== 'student' ? 'Your workspace' : 'Hi, ' +
-          activeStudent().name.split(' ')[0] }}
-        </h1>
-        <p class="muted">
-          {{ formatDate(event.date) }} · Your campus, in sync.
-        </p>
+        <p class="eyebrow">ADMIN CONSOLE</p>
+        <h1>School overview</h1>
+        <p class="muted">Manage events, students, and attendance across campus.</p>
       </div>
-      <span class="avatar"
-        >{{ state().role !== 'student' ? 'OR' : activeStudent().name.slice(0,
-        1) }}</span
-      >
+      <app-avatar [src]="auth.avatar()" [name]="auth.username()" [size]="48" />
     </section>
-    @if (state().role === 'super_admin' && (pendingCount() > 0 || !isOnline())) {
+    @if (pendingCount() > 0 || !isOnline()) {
     <button class="sync-banner" type="button" (click)="go('settings')">
       <span
         ><ion-icon
@@ -191,6 +207,117 @@
       ><ion-icon name="chevron-forward-outline"></ion-icon>
     </button>
     }
+    <section class="section-block admin-overview">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">CAMPUS AT A GLANCE</p>
+          <h2>Workspace overview</h2>
+        </div>
+      </div>
+      <div class="admin-stat-grid">
+        <article class="stat-card">
+          <strong>{{ state().events.length }}</strong><span>Total events</span>
+        </article>
+        <article class="stat-card">
+          <strong>{{ pendingEvents().length }}</strong><span>Pending approvals</span>
+        </article>
+        <article class="stat-card">
+          <strong>{{ state().students.length }}</strong><span>Students</span>
+        </article>
+        <article class="stat-card">
+          <strong>{{ state().attendance.length }}</strong><span>Attendance records</span>
+        </article>
+      </div>
+    </section>
+    <section class="section-block">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">QUICK ACCESS</p>
+          <h2>Manage your campus</h2>
+        </div>
+      </div>
+      <div class="quick-grid">
+        <button type="button" (click)="createEvent()">
+          <ion-icon name="add-outline"></ion-icon><strong>Create event</strong
+          ><small>Plan a campus event</small>
+        </button>
+        <button type="button" (click)="go('events')">
+          <ion-icon name="calendar-outline"></ion-icon><strong>All events</strong
+          ><small>Browse the school calendar</small>
+        </button>
+        <button type="button" (click)="go('students')">
+          <ion-icon name="people-outline"></ion-icon><strong>Students</strong
+          ><small>Manage the student roster</small>
+        </button>
+        <button type="button" (click)="go('reports')">
+          <ion-icon name="stats-chart-outline"></ion-icon><strong>Reports</strong
+          ><small>Review attendance totals</small>
+        </button>
+        <button type="button" (click)="go('announcements')">
+          <ion-icon name="chatbubble-outline"></ion-icon><strong>Announcements</strong
+          ><small>Share school updates</small>
+        </button>
+        <button type="button" (click)="go('settings-organizers')">
+          <ion-icon name="person-outline"></ion-icon><strong>Organizers</strong
+          ><small>Manage organizer accounts</small>
+        </button>
+        <button type="button" (click)="go('excuses')">
+          <ion-icon name="shield-checkmark-outline"></ion-icon><strong>Excuse requests</strong
+          ><small>{{ pendingExcuseCount() }} waiting for review</small>
+        </button>
+      </div>
+    </section>
+    <section class="section-block">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">CAMPUS CALENDAR</p>
+          <h2>Events across campus</h2>
+        </div>
+        <button class="text-action" type="button" (click)="go('events')">
+          View all ›
+        </button>
+      </div>
+      <div class="event-list admin-home-events">
+        @for (event of state().events; track event.id) {
+        <button class="event-card" type="button" (click)="openEvent(event.id)">
+          <strong class="event-card-title">{{ event.name }}</strong>
+          <span class="event-card-meta">{{ formatDate(event.date) }} · {{ event.startTime }}–{{ event.endTime }} · {{ event.venue }}</span>
+          @if (event.approvalStatus === 'pending') {
+          <ion-chip color="warning">Pending approval</ion-chip>
+          } @else {
+          <ion-chip color="success">Approved</ion-chip>
+          }
+          <span class="event-card-action">Manage event <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon></span>
+        </button>
+        } @empty {
+        <div class="empty-state">
+          <h2>No events yet</h2>
+          <p>Create the first event to start building your school calendar.</p>
+          <button class="primary-button" type="button" (click)="createEvent()">Create event</button>
+        </div>
+        }
+      </div>
+    </section>
+    } @else if (activeEvent(); as event) {
+    <section class="welcome-row">
+      <div>
+        <p class="eyebrow">
+          {{ state().role === 'organizer' ? 'ORGANIZER DESK' : 'STUDENT PASS' }}
+        </p>
+        <h1>
+          {{ state().role === 'organizer' ? 'Your workspace' : 'Hi, ' +
+          activeStudent().name.split(' ')[0] }}
+        </h1>
+        <p class="muted">
+          {{ formatDate(event.date) }} · Your campus, in sync.
+        </p>
+      </div>
+      <app-avatar
+        [src]="auth.avatar()"
+        [name]="state().role === 'organizer' ? auth.username() : activeStudent().name"
+        [size]="48"
+      />
+    </section>
     <section class="featured-event">
       <div class="featured-top">
         <span>NEXT UP</span><span>{{ formatDate(event.date) }}</span>
@@ -216,71 +343,6 @@
         <ion-icon name="scan-outline"></ion-icon> Scan attendance
       </button>
     </div>
-    } @else if (state().role === 'super_admin') {
-    <section class="section-block">
-      <div class="section-title">
-        <div>
-          <p class="eyebrow">LIVE OVERVIEW</p>
-          <h2>Attendance</h2>
-        </div>
-        <button class="text-action" type="button" (click)="go('attendance')">
-          Monitor ›
-        </button>
-      </div>
-      <div class="stat-grid">
-        <button
-          class="stat-card"
-          type="button"
-          (click)="statusFilter='Present'; go('attendance')"
-        >
-          <strong>{{ presentCount }}</strong><span>Present</span></button
-        ><button
-          class="stat-card"
-          type="button"
-          (click)="statusFilter='Incomplete'; go('attendance')"
-        >
-          <strong>{{ incompleteCount }}</strong><span>Incomplete</span></button
-        ><button
-          class="stat-card"
-          type="button"
-          (click)="statusFilter='Absent'; go('attendance')"
-        >
-          <strong>{{ absentCount }}</strong><span>Absent</span>
-        </button>
-      </div>
-    </section>
-    <section class="section-block">
-      <div class="section-title">
-        <div>
-          <p class="eyebrow">QUICK ACCESS</p>
-          <h2>Make it happen</h2>
-        </div>
-      </div>
-      <div class="quick-grid">
-        <button type="button" (click)="go('scan')">
-          <ion-icon name="scan-outline"></ion-icon><strong>Scan in</strong
-          ><small>Check attendance</small></button
-        ><button type="button" (click)="go('seating')">
-          <ion-icon name="grid-outline"></ion-icon><strong>Seat map</strong
-          ><small>Manage sections</small></button
-        ><button type="button" (click)="go('sms')">
-          <ion-icon name="chatbubble-outline"></ion-icon
-          ><strong>SMS outbox</strong><small>Message families</small></button
-        ><button type="button" (click)="go('reports')">
-          <ion-icon name="stats-chart-outline"></ion-icon
-          ><strong>Reports</strong><small>Section totals</small>
-        </button><button type="button" (click)="go('students')">
-          <ion-icon name="people-outline"></ion-icon><strong>Students</strong
-          ><small>Build your roster</small>
-        </button>
-        @if (state().role === 'super_admin') {
-        <button type="button" (click)="go('settings')">
-          <ion-icon name="person-outline"></ion-icon><strong>Manage organizers</strong
-          ><small>Create organizer accounts</small>
-        </button>
-        }
-      </div>
-    </section>
     } @else {
     <section class="student-pass-card">
       <div>
@@ -383,12 +445,84 @@
       <ion-icon name="add-outline"></ion-icon> Create event
     </button>
     }
+    <div class="events-toolbar">
+      <ion-segment
+        class="pill-segment"
+        aria-label="Show events as a list or a calendar"
+        [value]="eventView()"
+        (ionChange)="setEventView($event.detail.value)"
+      >
+        <ion-segment-button value="list"><ion-label>List</ion-label></ion-segment-button>
+        <ion-segment-button value="calendar"><ion-label>Calendar</ion-label></ion-segment-button>
+      </ion-segment>
+      @if (eventView() === 'list') {
+      <div class="filter-selects" [class.filter-selects-single]="state().role === 'student'">
+        <label>
+          <span class="visually-hidden">Show events</span>
+          <select [ngModel]="eventFilter()" (ngModelChange)="setEventFilter($event)">
+            <option value="upcoming">Upcoming</option>
+            <option value="past">Past</option>
+            <option value="all">All dates</option>
+          </select>
+        </label>
+        @if (state().role !== 'student') {
+        <label>
+          <span class="visually-hidden">Approval status</span>
+          <select [ngModel]="eventStatusFilter()" (ngModelChange)="setEventStatusFilter($event)">
+            <option value="all">All statuses</option>
+            <option value="pending">Pending ({{ eventStatusCounts().pending }})</option>
+            <option value="approved">Approved ({{ eventStatusCounts().approved }})</option>
+            <option value="rejected">Rejected ({{ eventStatusCounts().rejected }})</option>
+          </select>
+        </label>
+        }
+      </div>
+      }
+    </div>
+    @if (eventView() === 'calendar') {
+    <section class="calendar-card" aria-label="Event calendar">
+      <div class="calendar-head">
+        <button type="button" aria-label="Previous month" (click)="shiftCalendar(-1)">
+          <ion-icon name="chevron-back-outline" aria-hidden="true"></ion-icon>
+        </button>
+        <strong>{{ calendarTitle() }}</strong>
+        <button type="button" aria-label="Next month" (click)="shiftCalendar(1)">
+          <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+        </button>
+      </div>
+      <div class="calendar-weekdays" aria-hidden="true">
+        @for (name of weekdayNames; track name) { <span>{{ name }}</span> }
+      </div>
+      <div class="calendar-grid">
+        @for (cell of calendarCells(); track cell.date) {
+        <button
+          type="button"
+          class="calendar-cell"
+          [class.calendar-out]="!cell.inMonth"
+          [class.calendar-today]="cell.date === todayKey"
+          [class.calendar-selected]="cell.date === selectedDay()"
+          [attr.aria-label]="cellLabel(cell)"
+          [attr.aria-pressed]="cell.date === selectedDay()"
+          (click)="selectDay(cell.date)"
+        >
+          <span>{{ cell.day }}</span>
+          @if (cell.count) { <i class="calendar-dot" aria-hidden="true"></i> }
+        </button>
+        }
+      </div>
+      <p class="calendar-day-title">{{ selectedDayLabel() }}</p>
+    </section>
+    }
     <div class="event-list">
       @if (workspaceSync.error(); as error) {
-      <div class="inline-error" role="alert">
-        <span>{{ error }}</span>
-        <button class="secondary-button" type="button" (click)="syncWorkspace()">Retry</button>
-      </div>
+      <app-state-panel
+        tone="error"
+        icon="alert-circle-outline"
+        heading="Couldn't update events"
+        [message]="error"
+        actionLabel="Try again"
+        (action)="refreshNow()"
+      />
       }
       @if (state().role === 'super_admin' && pendingEvents().length) {
       <section class="approval-panel">
@@ -399,41 +533,61 @@
           <div>
             <strong>{{ event.name }}</strong>
             <small>{{ formatDate(event.date) }} · {{ event.startTime }} · {{ event.venue }}</small>
-            <span class="status-badge status-pending">Waiting for approval</span>
+            <ion-chip color="warning">Waiting for approval</ion-chip>
           </div>
-          <button class="primary-button" type="button" (click)="approveEvent(event.id)">Approve event</button>
+          <div class="approval-actions">
+            <button class="primary-button" type="button" (click)="approveEvent(event.id)">Approve</button>
+            <button class="secondary-button reject-button" type="button" (click)="rejectEvent(event.id)">Reject</button>
+          </div>
         </article>
         }
       </section>
       }
-      @if (syncProgress() && state().events.length === 0) {
+      @if (refreshing() || (syncProgress() && state().events.length === 0)) {
       <div class="skeleton-grid" aria-label="Loading events">
-        @for (skeleton of [1, 2, 3]; track skeleton) {
-        <div class="skeleton-card"><span></span><i></i><i></i><b></b></div>
+        @for (skeleton of skeletonRows; track skeleton) {
+        <div class="skeleton-card" aria-hidden="true">
+          <ion-skeleton-text [animated]="true" style="width: 45%"></ion-skeleton-text>
+          <ion-skeleton-text [animated]="true" style="width: 85%"></ion-skeleton-text>
+          <ion-skeleton-text [animated]="true" style="width: 60%"></ion-skeleton-text>
+        </div>
         }
       </div>
       } @else {
-      @for (event of state().events; track event.id) {
+      @for (event of visibleEvents(); track event.id) {
       <button class="event-card" type="button" (click)="openEvent(event.id)">
         <strong class="event-card-title">{{ event.name }}</strong>
         <span class="event-card-meta">{{ formatDate(event.date) }} · {{ event.startTime }}–{{ event.endTime }} · {{ event.venue }}</span>
         @if (state().role === 'student') {
-        <span class="status-badge" [class.status-required]="isEventRequired(event)">{{ isEventRequired(event) ? 'Required' : 'Normal event' }}</span>
+        <ion-chip [color]="isEventRequired(event) ? 'warning' : 'medium'">{{ isEventRequired(event) ? 'Required' : 'Normal event' }}</ion-chip>
         } @else if (event.approvalStatus === 'pending') {
-        <span class="status-badge status-pending">Pending approval</span>
+        <ion-chip color="warning">Pending approval</ion-chip>
+        } @else if (event.approvalStatus === 'rejected') {
+        <ion-chip color="danger">Rejected</ion-chip>
         } @else {
-        <span class="status-badge status-approved">Approved</span>
+        <ion-chip color="success">Approved</ion-chip>
+        }
+        @if (event.cancelled) {
+        <ion-chip color="danger">Cancelled</ion-chip>
+        } @else if (event.postponedFrom) {
+        <ion-chip color="warning">Moved</ion-chip>
+        }
+        @if (state().role !== 'student' && event.createdByName) {
+        <small class="event-creator">By {{ event.createdByName }}</small>
+        }
+        @if (state().role !== 'student' && event.approvalStatus === 'rejected' && event.rejectionReason) {
+        <small class="event-rejection">Reason: {{ event.rejectionReason }}</small>
         }
         <span class="event-card-action">View event <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon></span>
       </button>
       } @empty {
-      <div class="empty-state">
-        <h2>No events yet</h2>
-        <p>{{ state().role === 'student' ? 'Approved school events will appear here.' : 'Create the first event to get your calendar started.' }}</p>
-        @if (state().role !== 'student') {
-        <button class="primary-button" type="button" (click)="createEvent()">Create event</button>
-        }
-      </div>
+      <app-state-panel
+        icon="calendar-outline"
+        [heading]="eventsEmptyHeading()"
+        [message]="eventsEmptyMessage()"
+        [actionLabel]="state().role === 'student' || eventFilter() !== 'all' || eventView() === 'calendar' ? '' : 'Create event'"
+        (action)="createEvent()"
+      />
       }
       }
     </div>
@@ -441,9 +595,26 @@
     <div class="page-heading">
       <p class="eyebrow">SCHOOL UPDATES</p>
       <h1>Announcements</h1>
-      <p class="muted">Updates from the super admin.</p>
+      <p class="muted">Updates from your school. Posting one also texts the students it is for.</p>
     </div>
-    @if (state().role === 'super_admin') {
+    @if (bulkSms.total() > 0) {
+    <section class="sms-progress" role="status" aria-live="polite">
+      <div class="sms-progress-head">
+        <strong>{{ bulkSms.running() ? 'Texting students…' : 'Texting finished' }}</strong>
+        <span>{{ bulkSms.sent() }} of {{ bulkSms.total() }} sent{{ bulkSms.failed() ? ' · ' + bulkSms.failed() + ' failed' : '' }}</span>
+      </div>
+      <ion-progress-bar [value]="bulkSms.progress()"></ion-progress-bar>
+      @if (bulkSms.error(); as smsError) {
+      <p class="inline-error" role="alert">{{ smsError }}</p>
+      }
+      @if (bulkSms.running()) {
+      <button class="secondary-button" type="button" (click)="bulkSms.stop()">Stop</button>
+      } @else if (bulkSms.failed() > 0) {
+      <button class="secondary-button" type="button" (click)="bulkSms.retryFailed()">Retry {{ bulkSms.failed() }} failed</button>
+      }
+    </section>
+    }
+    @if (canPostUpdates()) {
     <details class="composer-card">
       <summary class="primary-button">Write announcement</summary>
       <form class="form-stack" (ngSubmit)="createAnnouncement()">
@@ -523,16 +694,30 @@
         <button class="secondary-button" type="button" (click)="loadSections()">Retry loading sections</button>
         }
         @if (announcementError(); as error) { <p class="inline-error" role="alert">{{ error }}</p> }
-        <button class="primary-button full-button" type="submit">Publish announcement</button>
+        <button class="primary-button full-button" type="submit">Publish and text students</button>
       </form>
     </details>
+    <button class="text-action" type="button" (click)="go('sms')">View SMS outbox ›</button>
     }
     @if (workspaceSync.error(); as error) {
-    <div class="inline-error" role="alert"><span>{{ error }}</span><button class="secondary-button" type="button" (click)="syncWorkspace()">Retry</button></div>
+    <app-state-panel
+      tone="error"
+      icon="alert-circle-outline"
+      heading="Couldn't update announcements"
+      [message]="error"
+      actionLabel="Try again"
+      (action)="refreshNow()"
+    />
     }
-    @if (syncProgress() && visibleAnnouncements().length === 0) {
+    @if (refreshing() || (syncProgress() && visibleAnnouncements().length === 0)) {
     <div class="skeleton-grid" aria-label="Loading announcements">
-      @for (skeleton of [1, 2]; track skeleton) { <div class="skeleton-card"><span></span><i></i><i></i><i></i></div> }
+      @for (skeleton of skeletonRows; track skeleton) {
+      <div class="skeleton-card" aria-hidden="true">
+        <ion-skeleton-text [animated]="true" style="width: 40%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 90%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 70%"></ion-skeleton-text>
+      </div>
+      }
     </div>
     } @else {
     <div class="announcement-grid">
@@ -540,57 +725,60 @@
     <article class="announcement-card">
       <p class="eyebrow">{{ formatDate(announcement.createdAt.slice(0, 10)) }}</p>
       <h2>{{ announcement.title }}</h2>
-      @if (state().role === 'super_admin') {
+      @if (canPostUpdates()) {
       <p class="announcement-audience-badge">{{ announcementAudienceLabel(announcement) }}</p>
       }
       <p>{{ announcement.body }}</p>
     </article>
     } @empty {
-    <div class="empty-state"><h2>No announcements yet</h2><p>School updates from the super admin will appear here.</p></div>
+    <app-state-panel
+      icon="chatbubble-outline"
+      heading="No announcements yet"
+      message="School updates from the super admin will appear here."
+    />
     }
     </div>
     }
     } @else if (page() === 'students') {
     <div class="page-heading">
-      <p class="eyebrow">YOUR ROSTER</p>
+      <p class="eyebrow">STUDENT ROSTER</p>
       <h1>Students</h1>
-      <p class="muted">Add the students who will attend your events.</p>
+      <p class="muted">Students join the roster by registering their own accounts.</p>
     </div>
-    <button class="primary-button full-button" type="button" (click)="createStudent()">
-      <ion-icon name="add-outline"></ion-icon> Add student
-    </button>
     <div class="event-list">
-      @for (student of state().students; track student.id) {
-      <article class="attendance-row">
-        <span class="student-avatar">{{ initials(student.name) }}</span>
-        <div class="attendance-main">
-          <strong>{{ student.name }}</strong>
-          <small>{{ student.section }} · {{ student.mobile }}</small>
-        </div>
-      </article>
-      } @empty {
-      <div class="empty-state">
-        Your roster is empty. Add students to build your own data.
+      @if (refreshing()) {
+      @for (skeleton of skeletonRows; track skeleton) {
+      <div class="skeleton-card" aria-hidden="true">
+        <ion-skeleton-text [animated]="true" style="width: 50%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 85%"></ion-skeleton-text>
       </div>
       }
-    </div>
-    } @else if (page() === 'create-student') {
-    <button class="back-link" type="button" (click)="go('students')">
-      ‹ Students
-    </button>
-    <div class="page-heading">
-      <p class="eyebrow">ROSTER SETUP</p>
-      <h1>Add student</h1>
-      <p class="muted">Enter the student details for your event roster.</p>
-    </div>
-    <form class="form-stack" (ngSubmit)="saveStudent()">
-      <label>Name<input name="studentName" required [(ngModel)]="studentForm.name" /></label>
-      <label>Section<input name="studentSection" required [(ngModel)]="studentForm.section" placeholder="e.g. Grade 10-A" /></label>
-      <label>Mobile number<input name="studentMobile" required type="tel" [(ngModel)]="studentForm.mobile" placeholder="e.g. +639123456789" /></label>
-      <button class="primary-button full-button" type="submit">
-        Save student
+      } @else {
+      @for (student of state().students; track student.id) {
+      <button class="attendance-row student-row" type="button" [attr.aria-label]="'Open ' + student.name" (click)="openStudent(student.id)">
+        <app-avatar [name]="student.name" [size]="40" />
+        <div class="attendance-main">
+          <strong>{{ student.name }}</strong>
+          <small>{{ student.id }} · {{ student.section }} · {{ localMobile(student.mobile) }}</small>
+        </div>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
       </button>
-    </form>
+      } @empty {
+      @if (syncProgress()) {
+      <div class="skeleton-card" role="status" aria-label="Loading students">
+        <ion-skeleton-text [animated]="true" style="width: 50%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 80%"></ion-skeleton-text>
+      </div>
+      } @else {
+      <app-state-panel
+        icon="people-outline"
+        heading="No students yet"
+        message="Students appear here after they create their own accounts from the sign-in page."
+      />
+      }
+      }
+      }
+    </div>
     } @else if (page() === 'event-details') {
     <button class="back-link" type="button" (click)="go('events')">
       ‹ All events
@@ -609,6 +797,21 @@
         activeEvent().venue }}
       </div>
     </section>
+    @if (activeEvent().cancelled) {
+    <p class="status-banner status-banner-rejected" role="status"><strong>Cancelled.</strong> {{ activeEvent().cancelReason }}</p>
+    }
+    @if (activeEvent().postponedFrom; as moved) {
+    <p class="status-banner status-banner-pending" role="status">Moved from {{ formatDate(moved.date) }}, {{ moved.startTime }}–{{ moved.endTime }}.</p>
+    }
+    @if (state().role !== 'student' && activeEvent().approvalStatus === 'pending') {
+    <p class="status-banner status-banner-pending" role="status">Waiting for the admin to approve this event. Scanning opens once it is approved.</p>
+    }
+    @if (state().role !== 'student' && activeEvent().approvalStatus === 'rejected') {
+    <p class="status-banner status-banner-rejected" role="status">
+      <strong>Rejected.</strong> {{ activeEvent().rejectionReason || 'The admin did not give a reason.' }}
+      @if (canEditEvent(activeEvent())) { Edit the event and resubmit it for approval. }
+    </p>
+    }
     <section class="section-block">
       <p class="eyebrow">EVENT PLAN</p>
       <div class="detail-line">
@@ -617,11 +820,11 @@
       </div>
       <div class="detail-line">
         <span>Sections</span
-        ><strong>{{ activeEvent().sections.length }}</strong>
+        ><strong>{{ eventSectionCount(activeEvent()) }}</strong>
       </div>
       <div class="detail-line">
-        <span>Assigned seats</span
-        ><strong>{{ assignmentCount() }} students</strong>
+        <span>Configured seating</span
+        ><strong>{{ eventSeatingSummary(activeEvent()) }}</strong>
       </div>
     </section>
     <div class="action-stack">
@@ -631,32 +834,35 @@
         [disabled]="state().role !== 'student' && !canScanActiveEvent()"
         (click)="go(state().role !== 'student' ? 'scan' : 'my-qr')"
       >
-        {{ state().role !== 'student' ? (canScanActiveEvent() ? 'Scan attendance' : 'Scanning available after approval') : 'Open my student
+        {{ state().role !== 'student' ? (canScanActiveEvent() ? 'Scan attendance' : (activeEvent().cancelled ? 'Event cancelled' : 'Scanning available after approval')) : 'Open my student
         pass' }}</button
-      >@if (state().role === 'super_admin') {<button
-        class="secondary-button full-button"
-        type="button"
-        (click)="go('seating')"
-      >
-        View seating map</button>}
-      @if (state().role === 'super_admin') {
-      <button
-        class="quiet-button full-button"
-        type="button"
-        (click)="editEvent()"
-      >
-        Edit event details
+      >@if (state().role !== 'student') {
+      <button class="secondary-button full-button" type="button" (click)="go('attendance')">Live attendance</button>
+      <button class="secondary-button full-button" type="button" (click)="go('reports')">Attendance report</button>
+      <button class="secondary-button full-button" type="button" (click)="go('seating')">View seating map</button>
+      }
+      @if (canEditEvent(activeEvent())) {
+      <button class="quiet-button full-button" type="button" (click)="editEvent()">
+        {{ state().role === 'organizer' ? 'Edit and resubmit' : 'Edit event details' }}
       </button>
       }
+      @if (state().role === 'super_admin') {
+      @if (activeEvent().cancelled) {
+      <button class="secondary-button full-button" type="button" (click)="reinstateActiveEvent()">Reinstate event</button>
+      } @else {
+      <button class="secondary-button full-button" type="button" (click)="openPostpone()">Move to another date</button>
+      <button class="quiet-button full-button danger-text" type="button" (click)="cancelActiveEvent()">Cancel event</button>
+      }
+      }
     </div>
-    } @else if (page() === 'create-event') {
+    } @else if (page() === 'create-event' || page() === 'edit-event') {
     <button class="back-link" type="button" (click)="go('events')">
       ‹ Cancel
     </button>
     <div class="page-heading">
       <p class="eyebrow">EVENT SETUP</p>
-      <h1>{{ editingEventId ? 'Edit event' : 'Create event' }}</h1>
-      <p class="muted">Seats are assigned to the student roster.</p>
+      <h1>{{ page() === 'edit-event' ? 'Edit event' : 'Create event' }}</h1>
+      <p class="muted">Event details, who attends, then where they sit.</p>
     </div>
     <form class="form-stack" (ngSubmit)="saveEvent()">
       <label
@@ -667,20 +873,30 @@
           placeholder="e.g. Science fair"
       /></label>
       <div class="form-pair">
+        <label class="date-picker-field">
+          <span>Date</span>
+          <button
+            class="date-picker-trigger"
+            type="button"
+            [attr.aria-label]="eventForm.date ? 'Change event date, ' + formatDate(eventForm.date) : 'Choose event date'"
+            (click)="eventDatePickerOpen.set(true)"
+          >
+            <ion-icon name="calendar-outline" aria-hidden="true"></ion-icon>
+            {{ eventForm.date ? formatDate(eventForm.date) : 'Choose a date' }}
+          </button>
+        </label>
         <label
-          >Date<input
-            name="eventDate"
-            required
-            type="date"
-            [(ngModel)]="eventForm.date" /></label
-        ><label
-          >Grace period<input
+          >Grace period (minutes)<input
             name="grace"
             type="number"
             min="0"
             max="120"
+            step="1"
+            required
+            inputmode="numeric"
             [(ngModel)]="eventForm.graceMinutes"
-        /></label>
+          /></label
+        >
       </div>
       <div class="form-pair">
         <label
@@ -697,25 +913,22 @@
             [(ngModel)]="eventForm.endTime"
         /></label>
       </div>
+      <label>Venue<select name="venue" required [(ngModel)]="eventForm.venue">
+        <option value="Gymnasium">Gymnasium</option>
+        <option value="Conference room">Conference room</option>
+      </select></label>
       <label
-        >Venue<input
-          name="venue"
-          required
-          [(ngModel)]="eventForm.venue"
-          placeholder="Main quadrangle" /></label
-      ><label
         >Description<textarea
           name="description"
           rows="3"
           [(ngModel)]="eventForm.description"
         ></textarea></label
       >
-      <section class="settings-panel">
-        <p class="eyebrow">REQUIRED ATTENDEES</p>
-        <p class="setting-help">Each group is an exact audience. Choose All years for a whole course, or add separate year/section groups to combine courses and years.</p>
-        @if (sectionsLoading()) {
-        <p class="muted" role="status">Loading course and section options…</p>
-        }
+      @if (eventError(); as error) {
+      <p class="scan-result rejected" role="alert">{{ error }}</p>
+      }
+      <section class="settings-panel setup-step">
+        <p class="eyebrow"><span class="step-dot">1</span> WHO IS ATTENDING?</p>
         <div class="form-pair">
           <label
             >Course<select
@@ -740,52 +953,130 @@
             </select></label
           >
         </div>
-        @if (eventGroupSections().length > 1) {
-        <div class="event-section-grid">
-          <button class="text-action" type="button" (click)="selectAllEventGroupSections()">All sections</button>
-          @for (section of eventGroupSections(); track section.id) {
-          <label class="section-choice">
-            <input
-              type="checkbox"
-              [checked]="signupSectionGroup.sectionIds.includes(section.id)"
-              (change)="setEventGroupSection($event, section.id)"
-            />
-            <span>{{ section.yearLevel }} · Section {{ section.name }}</span>
-          </label>
-          }
-        </div>
-        } @else if (eventGroupSections().length === 1) {
-        <p class="muted">{{ eventGroupSections()[0].yearLevel }} · Section {{ eventGroupSections()[0].name }} is selected automatically.</p>
+        @if (sectionsLoading()) {
+        <p class="muted" role="status">Loading sections…</p>
+        } @else if (eventGroupSections().length === 0) {
+        <p class="muted">No sections here yet. Add them in Settings › Courses &amp; sections.</p>
         } @else {
-        <p class="muted">No sections are configured for this course and year. Add sections in Settings → Manage sections.</p>
-        }
-        <button class="secondary-button full-button" type="button" (click)="addEventSectionGroup()" [disabled]="signupSectionGroup.sectionIds.length===0">
-          Add attendee group
-        </button>
-        <div class="filter-row">
-          @for (sectionId of selectedEventRequiredSections(); track sectionId) {
-          <button type="button" (click)="removeRequiredSection(sectionId)">
-            {{ requiredSectionLabel(sectionId) }} ×
+        <div class="pick-chips" role="group" aria-label="Tap sections to include">
+          <button
+            class="pick-chip pick-chip-all"
+            type="button"
+            [class.pick-chip-on]="allGroupSectionsSelected()"
+            (click)="toggleAllGroupSections()"
+          >
+            {{ allGroupSectionsSelected() ? '✓ All' : 'Select all' }}
+          </button>
+          @for (section of eventGroupSections(); track section.id) {
+          <button
+            class="pick-chip"
+            type="button"
+            [class.pick-chip-on]="isRequiredSelected(section.id)"
+            [attr.aria-pressed]="isRequiredSelected(section.id)"
+            (click)="toggleRequiredSection(section.id)"
+          >
+            {{ isRequiredSelected(section.id) ? '✓ ' : '' }}{{ eventGroupYears().length > 1 && signupSectionGroup.yearLevel === 'All years' ? section.yearLevel + ' · ' : '' }}{{ section.name }}
           </button>
           }
         </div>
-        @if (eventError(); as error) {
-        <p class="scan-result rejected" role="alert">{{ error }}</p>
         }
         @if (sectionError(); as error) {
         <p class="scan-result rejected" role="alert">{{ error }}</p>
         <button class="secondary-button full-button" type="button" (click)="loadSections()">Retry loading sections</button>
         }
+        @if (selectedEventRequiredSections().length) {
+        <p class="selected-summary">
+          <strong>{{ selectedEventRequiredSections().length }}</strong> section{{ selectedEventRequiredSections().length === 1 ? '' : 's' }} attending — you can switch course or year and keep adding.
+        </p>
+        }
+      </section>
+      <section class="settings-panel setup-step">
+        <p class="eyebrow"><span class="step-dot">2</span> ARRANGE THE SEATS</p>
+        @if (selectedEventRequiredSections().length === 0) {
+        <p class="muted">Pick at least one section above to start arranging seats.</p>
+        } @else {
+        @for (block of seatBlocks(); track $index; let b = $index) {
+        <div class="seat-line-card">
+          <div class="seat-line-head">
+            <strong>Line {{ b + 1 }}</strong>
+            <span>{{ block.rows * block.seatsPerRow }} chairs</span>
+            @if (seatBlocks().length > 1) {
+            <button class="seat-line-remove" type="button" aria-label="Remove line {{ b + 1 }}" (click)="removeSeatBlock(b)">Remove</button>
+            }
+          </div>
+          <div class="layout-controls">
+            <div class="stepper">
+              <span>Rows</span>
+              <button type="button" aria-label="Fewer rows" (click)="stepBlockRows(b, -1)">−</button>
+              <strong>{{ block.rows }}</strong>
+              <button type="button" aria-label="More rows" (click)="stepBlockRows(b, 1)">+</button>
+            </div>
+            <div class="stepper">
+              <span>Chairs per row</span>
+              <button type="button" aria-label="Fewer chairs per row" (click)="stepBlockSeats(b, -1)">−</button>
+              <strong>{{ block.seatsPerRow }}</strong>
+              <button type="button" aria-label="More chairs per row" (click)="stepBlockSeats(b, 1)">+</button>
+            </div>
+          </div>
+        </div>
+        }
+        @if (seatBlocks().length < 2) {
+        <button class="secondary-button full-button" type="button" (click)="addSeatBlock()">+ Add another line</button>
+        }
+        <p class="seat-total"><strong>{{ eventSeatingPlan.sharedSeatCount ?? 0 }}</strong> chairs in total</p>
+        <div class="seat-editor">
+          <div class="center-column">
+            <div class="stage-label">FRONT</div>
+            @if ((eventSeatingPlan.sharedSeatCount ?? 0) > 0) {
+            <div class="seat-fit"><div class="seat-blocks" [class.seat-blocks-dense]="previewCols() > 14" [style.--cols]="previewCols()" [style.--blocks]="previewBlockCount()" aria-label="Chair layout preview">
+              @for (block of seatBlocks(); track $index; let b = $index) {
+              @if (block.rows > 0) {
+              <div class="seat-block">
+                <p class="seat-block-title">Line {{ b + 1 }}</p>
+                <div class="seat-map seat-map-preview">
+                  @for (row of range(block.rows); track $index; let r = $index) {
+                  <div class="seat-map-row">
+                    <span class="seat-row-label">R{{ r + 1 }}</span>
+                    @for (col of range(block.seatsPerRow); track $index; let c = $index) {
+                    <span class="seat seat-available">{{ c + 1 }}</span>
+                    }
+                  </div>
+                  }
+                </div>
+              </div>
+              }
+              }
+            </div></div>
+            } @else {
+            <p class="muted center-empty">Use + to add rows of chairs</p>
+            }
+          </div>
+        </div>
+        <p class="setting-help">Every attending section sits in these chairs.</p>
+        }
       </section>
       <button class="primary-button full-button" type="submit">
-        {{ editingEventId ? 'Save changes' : 'Create event' }}
+        {{ page() === 'edit-event' ? 'Save changes' : 'Create event' }}
       </button>
     </form>
+    <ion-modal
+      [isOpen]="eventDatePickerOpen()"
+      (didDismiss)="eventDatePickerOpen.set(false)"
+    >
+      <ng-template>
+        <ion-datetime
+          presentation="date"
+          [min]="minimumEventDate"
+          [value]="eventForm.date || minimumEventDate"
+          (ionChange)="setEventDate($event.detail.value)"
+        ></ion-datetime>
+      </ng-template>
+    </ion-modal>
     } @else if (page() === 'seating') {
     <div class="page-heading">
       <p class="eyebrow">SEATING SETUP</p>
       <h1>Seat map</h1>
-      <p class="muted">{{ activeEvent().name }} · Tap a seat for details.</p>
+      <p class="muted">{{ activeEvent().name }} · {{ activeEvent().seatingPlan ? 'Section-based shared seating.' : 'Tap a seat for details.' }}</p>
     </div>
     <label class="select-label"
       >Event<select
@@ -797,11 +1088,60 @@
         }
       </select></label
     >
+    @if (activeEvent().seatingPlan; as plan) {
     <div class="seat-legend">
-      <span>Available</span><span>Assigned</span><span>Checked in</span
-      ><span>Violation</span>
+      <span>Available chair</span><span>Checked in</span>
     </div>
     <div class="stage-label">FRONT OF VENUE</div>
+    <section class="seat-section">
+      <div class="seat-section-title">
+        <strong>{{ sharedSeatCount(activeEvent()) }} chairs</strong>
+        <small>{{ sharedSeatOccupancy() }} / {{ sharedSeatCount(activeEvent()) }} occupied</small>
+      </div>
+      <details class="seat-sections">
+        <summary>
+          {{ sharedSeatSectionIds(activeEvent()).length }} section{{ sharedSeatSectionIds(activeEvent()).length === 1 ? '' : 's' }} attending
+        </summary>
+        <div class="seat-sections-list">
+          @for (sectionId of sharedSeatSectionIds(activeEvent()); track sectionId) {
+          <span class="seat-sections-item">{{ requiredSectionLabel(sectionId) }}</span>
+          }
+        </div>
+      </details>
+      <div class="seat-fit"><div class="seat-blocks" [class.seat-blocks-dense]="eventCols(activeEvent()) > 14" [style.--cols]="eventCols(activeEvent())" [style.--blocks]="seatRows(activeEvent()).length">
+        @for (block of seatRows(activeEvent()); track block.block) {
+        <div class="seat-block">
+          @if (seatRows(activeEvent()).length > 1) {
+          <p class="seat-block-title">Line {{ block.block + 1 }}</p>
+          }
+          <div class="seat-map">
+            @for (row of block.rows; track row.row) {
+            <div class="seat-map-row">
+              <span class="seat-row-label">R{{ row.row }}</span>
+              @for (item of row.seats; track item.seat.id) {
+              <span [class]="'seat seat-' + seatPoolStatus(item.index)" [attr.aria-label]="'Line ' + (block.block + 1) + ' row ' + row.row + ' chair ' + item.seat.number + ' · ' + seatPoolStatus(item.index)">{{ item.seat.number }}</span>
+              }
+            </div>
+            }
+          </div>
+        </div>
+        }
+      </div></div>
+    </section>
+    } @else {
+    <div class="seat-legend">
+      <span>Available</span><span>Assigned</span><span>Checked in</span>
+    </div>
+    <div class="stage-label">FRONT OF VENUE</div>
+    @if (activeEvent().seats.length === 0) {
+    <section class="empty-state">
+      <h2>No chairs set up yet</h2>
+      <p>This event has no chair layout. Edit the event and set the number of rows and chairs per row to see the seat map.</p>
+      @if (state().role === 'super_admin') {
+      <button class="primary-button" type="button" (click)="editEvent()">Set up chairs</button>
+      }
+    </section>
+    }
     @for (section of activeEvent().sections; track section) {
     <section class="seat-section">
       <div class="seat-section-title">
@@ -820,7 +1160,8 @@
         }
       </div>
     </section>
-    } @if (selectedSeat(); as seat) {
+    }
+    } @if (!activeEvent().seatingPlan && selectedSeat(); as seat) {
     <div class="modal-scrim" (click)="selectedSeat.set(null)">
       <section class="seat-sheet" (click)="$event.stopPropagation()">
         <button
@@ -837,13 +1178,16 @@
           {{ seatStudent(seat)?.name ?? 'Available seat' }} · {{
           seatStatus(seat) }}
         </p>
+        @if (seatStudent(seat); as student) {
+        <p>{{ student.id }} · {{ student.course }} · {{ student.yearLevel }} · {{ student.section }}</p>
+        }
         @if (state().role !== 'student' && !recordFor(seat.studentId ??
         '')?.timeIn) {
         <label class="select-label"
           >Assign student<select [(ngModel)]="selectedStudentToAssign">
             @for (student of state().students; track student.id) {
             <option [value]="student.id">
-              {{ student.name }} · {{ student.section }}
+              {{ student.name }} · {{ student.id }} · {{ student.course }} {{ student.yearLevel }} · {{ student.section }}
             </option>
             }
           </select></label
@@ -857,32 +1201,19 @@
         }
       </section>
     </div>
-    } @if (eventViolations().length) {
-    <section class="violation-list">
-      <p class="eyebrow">SEATING VIOLATIONS</p>
-      @for (violation of eventViolations(); track violation.id) {
-      <p>{{ studentName(violation.studentId) }} · {{ violation.reason }}</p>
-      }
-    </section>
-    } } @else if (page() === 'scan') {
+    }
+    } @else if (page() === 'scan') {
     <div class="page-heading">
       <p class="eyebrow">CHECK-IN DESK</p>
       <h1>Scan attendance</h1>
       <p class="muted">
-        {{ activeEvent().name }} · First scan in, second scan out.
+        {{ activeEvent().name }} · Scan each student QR pass to record IN, then OUT.
       </p>
     </div>
-    <label class="select-label"
-      >Gate section<select [(ngModel)]="gateSection">
-        @for (section of activeEvent().sections; track section) {
-        <option [value]="section">{{ section }}</option>
-        }
-      </select></label
-    >
     <div class="scanner-frame">
       <video #camera muted playsinline></video>
       <div class="scan-reticle"></div>
-      <p>Align student pass inside the frame</p>
+      <p>Student details and their section seating are recognized automatically</p>
     </div>
     <button
       class="secondary-button full-button"
@@ -892,36 +1223,25 @@
     >
       Open camera scanner
     </button>
-    <div class="divider-label">OR SIMULATE A SCAN</div>
-    <label class="select-label"
-      >Choose student<select [(ngModel)]="scanStudentId">
-        @for (student of state().students; track student.id) {
-        <option [value]="student.id">
-          {{ student.name }} · {{ student.section }}
-        </option>
-        }
-      </select></label
-    ><button
-      class="primary-button full-button"
-      type="button"
-      [disabled]="!canScanActiveEvent()"
-      (click)="scanStudent(scanStudentId)"
-    >
-      Simulate scan
-    </button>
     <div class="scan-count" aria-live="polite">
       <strong>{{ scannedCount() }}</strong><span>students checked in or out</span>
     </div>
     @if (scanResult(); as result) {
     <section [class]="'scan-result ' + result.tone">
       <strong>{{ result.message }}</strong>@if (result.student) {
-      <span>{{ result.student.name }} · {{ result.student.section }}</span> }@if
-      (result.seat) {
-      <span>Row {{ result.seat.row }} · Seat {{ result.seat.number }}</span>
+      @if (scanAvatar()) {
+      <app-avatar [src]="scanAvatar()" [name]="result.student.name" [size]="72" />
+      }
+      <span>{{ result.student.name }} · {{ result.student.id }}</span>
+      <span>{{ result.student.course }} · {{ result.student.yearLevel }} · {{ result.student.section }}</span>
+      }@if (result.seat) {
+      <span>Assigned seat: {{ result.seat.section }} · Row {{ result.seat.row }} · Seat {{ result.seat.number }}</span>
+      } @else if (result.seatLocation) {
+      <span>Section seating: {{ result.seatLocation }}</span>
       }<small>{{ result.time }}</small>
     </section>
     }<button class="text-action" type="button" (click)="go('seating')">
-      {{ eventViolations().length }} seating violations ›
+      View seating map ›
     </button>
     } @else if (page() === 'attendance' || page() === 'history') {
     <div class="page-heading">
@@ -946,6 +1266,32 @@
         }
       </select></label
     >
+    @if (monitorSummary(); as summary) {
+    <section class="attendance-stats monitor-stats" aria-label="Attendance summary">
+      <article class="stat-card"><strong>{{ summary.here }}</strong><span>Here now</span></article>
+      <article class="stat-card"><strong>{{ summary.out }}</strong><span>Checked out</span></article>
+      <article class="stat-card"><strong>{{ summary.notYet }}</strong><span>{{ summary.ended ? 'Absent' : 'Not yet here' }}</span></article>
+      <article class="stat-card"><strong>{{ summary.excused }}</strong><span>Excused</span></article>
+      <article class="stat-card"><strong>{{ summary.late }}</strong><span>Came late</span></article>
+    </section>
+    <div class="monitor-progress" role="status">
+      <ion-progress-bar [value]="summary.total ? summary.arrived / summary.total : 0"></ion-progress-bar>
+      <span>{{ summary.arrived }} of {{ summary.total }} students arrived</span>
+    </div>
+    @if (summary.sections.length > 1) {
+    <details class="seat-sections">
+      <summary>By section</summary>
+      <div class="section-progress-list">
+        @for (item of summary.sections; track item.section) {
+        <div class="section-progress-row">
+          <span>{{ item.section }}</span>
+          <strong>{{ item.arrived }} / {{ item.total }}</strong>
+        </div>
+        }
+      </div>
+    </details>
+    }
+    }
     <div class="search-field">
       <ion-icon name="search-outline"></ion-icon
       ><input
@@ -954,62 +1300,71 @@
         placeholder="Search student or section"
       />
     </div>
-    <div class="filter-row">
-      <button type="button" (click)="statusFilter='All'">All</button>@for
-      (status of ['Present','Late','Incomplete','Absent']; track status) {
-      <button type="button" (click)="statusFilter=status">{{ status }}</button>
+    <div class="filter-row" role="group" aria-label="Filter students">
+      @for (option of [['All','All'],['Here','Here now'],['Out','Checked out'],['Not yet','Not yet / absent'],['Late','Late'],['Excused','Excused']]; track option[0]) {
+      <button
+        type="button"
+        [class.filter-on]="statusFilter === option[0]"
+        [attr.aria-pressed]="statusFilter === option[0]"
+        (click)="statusFilter = option[0]"
+      >{{ option[1] }}</button>
       }
     </div>
     @for (student of monitorStudents(); track student.id) {
-    <article class="attendance-row">
-      <span class="student-avatar">{{ initials(student.name) }}</span>
+    @let live = monitorState(student.id);
+    <article class="attendance-row monitor-row">
+      <app-avatar [name]="student.name" [size]="40" />
       <div class="attendance-main">
-        <strong>{{ student.name }}</strong
-        ><small>{{ student.section }} · {{ seatLabel(student.id) }}</small>
+        <strong>{{ student.name }}</strong>
+        <small>{{ student.section }}</small>
         <div class="time-pair">
-          <span>IN {{ formatTime(recordFor(student.id)?.timeIn) }}</span
-          ><span>OUT {{ formatTime(recordFor(student.id)?.timeOut) }}</span
-          ><span>{{ durationLabel(student.id) }}</span>
+          <span>IN {{ formatTime(recordFor(student.id)?.timeIn) }}</span>
+          <span>OUT {{ formatTime(recordFor(student.id)?.timeOut) }}</span>
+          @if (recordFor(student.id)?.manual) { <span>by hand</span> }
         </div>
+        @if (canScanActiveEvent()) {
+        <div class="monitor-actions">
+          @switch (live?.key) {
+          @case ('Not yet') {
+          <button type="button" class="monitor-button" (click)="manualMark(student, 'in')">Check in</button>
+          <button type="button" class="monitor-button monitor-button-quiet" (click)="manualMark(student, 'excused')">Excused</button>
+          }
+          @case ('Here') {
+          <button type="button" class="monitor-button" (click)="manualMark(student, 'out')">Check out</button>
+          }
+          @case ('Excused') {
+          <button type="button" class="monitor-button monitor-button-quiet" (click)="manualMark(student, 'clear')">Undo excused</button>
+          <button type="button" class="monitor-button" (click)="manualMark(student, 'in')">Check in</button>
+          }
+          }
+        </div>
+        }
       </div>
-      <span [class]="'status-badge ' + statusClass(studentStatus(student.id))"
-        >{{ studentStatus(student.id) }}</span
-      >
+      <div class="monitor-chips">
+        @if (live) { <ion-chip [color]="live.color">{{ live.label }}</ion-chip> }
+        @if (live?.late) { <ion-chip color="warning">Late</ion-chip> }
+      </div>
     </article>
     } @empty {
-    <div class="empty-state">No students match this view.</div>
-    } } @else {
+    <app-state-panel
+      icon="people-outline"
+      heading="No students match"
+      message="Change the search or the filter to see more students."
+    />    } } @else {
     <div class="profile-strip">
       <strong>{{ activeStudent().name }}</strong
       ><small
         >{{ activeStudent().section }} · {{ activeStudent().mobile }}</small
       >
     </div>
-    @for (event of state().events; track event.id) {
-    <article class="attendance-row">
-      <span class="student-avatar">{{ initials(activeStudent().name) }}</span>
-      <div class="attendance-main">
-        <strong>{{ event.name }}</strong
-        ><small
-          >{{ formatDate(event.date) }} · {{ historySeatLabel(event,
-          activeStudent().id) }}</small
-        >
-        <div class="time-pair">
-          <span
-            >IN {{ formatTime(recordForEvent(event.id,
-            activeStudent().id)?.timeIn) }}</span
-          ><span
-            >OUT {{ formatTime(recordForEvent(event.id,
-            activeStudent().id)?.timeOut) }}</span
-          >
-        </div>
-      </div>
-      <span
-        [class]="'status-badge ' + statusClass(eventStudentStatus(event, activeStudent().id))"
-        >{{ eventStudentStatus(event, activeStudent().id) }}</span
-      >
-    </article>
-    } } } @else if (page() === 'reports') {
+    <app-attendance-summary
+      [summary]="attendanceSummary()"
+      [excuses]="myExcuses()"
+      [allowExcuse]="state().role === 'student'"
+      (excuse)="startExcuse($event)"
+      (withdraw)="withdrawExcuse($event)"
+    />
+    } } @else if (page() === 'reports') {
     <div class="page-heading">
       <p class="eyebrow">ATTENDANCE INSIGHTS</p>
       <h1>Section report</h1>
@@ -1046,7 +1401,7 @@
       ><span class="report-counts"
         >{{ section.total }} total · {{ section.present }} present · {{
         section.late }} late · {{ section.incomplete }} incomplete · {{
-        section.absent }} absent</span
+        section.absent }} absent · {{ section.excused }} excused</span
       ><span class="report-foot"
         >Average duration: {{ section.average }} min</span
       >@if (selectedReportSection() === section.section) {
@@ -1057,6 +1412,14 @@
       }
     </button>
     }<button
+      class="primary-button full-button"
+      type="button"
+      [disabled]="reportBusy()"
+      (click)="downloadReportPdf()"
+    >
+      {{ reportBusy() ? 'Preparing…' : 'Printable report (PDF)' }}
+    </button>
+    <button
       class="secondary-button full-button"
       type="button"
       (click)="exportCsv()"
@@ -1074,16 +1437,43 @@
     @if (sms.error(); as error) {
     <p class="scan-result rejected" role="alert">{{ error }}</p>
     }
+    @if (bulkSms.total() > 0) {
+    <section class="sms-progress" role="status" aria-live="polite">
+      <div class="sms-progress-head">
+        <strong>{{ bulkSms.running() ? 'Texting students…' : 'Texting finished' }}</strong>
+        <span>{{ bulkSms.sent() }} of {{ bulkSms.total() }} sent{{ bulkSms.failed() ? ' · ' + bulkSms.failed() + ' failed' : '' }}</span>
+      </div>
+      <ion-progress-bar [value]="bulkSms.progress()"></ion-progress-bar>
+      @if (bulkSms.error(); as smsError) {
+      <p class="inline-error" role="alert">{{ smsError }}</p>
+      }
+      @if (bulkSms.running()) {
+      <button class="secondary-button" type="button" (click)="bulkSms.stop()">Stop</button>
+      } @else if (bulkSms.failed() > 0) {
+      <button class="secondary-button" type="button" (click)="bulkSms.retryFailed()">Retry {{ bulkSms.failed() }} failed</button>
+      }
+    </section>
+    }
+    @if (canSendTexts() && queuedTextCount() > 0 && !bulkSms.running()) {
+    <button class="primary-button full-button" type="button" (click)="sendQueuedTexts()">
+      Send {{ queuedTextCount() }} queued text{{ queuedTextCount() === 1 ? '' : 's' }} from my SIM
+    </button>
+    }
+    @if (state().role === 'super_admin') {
     <button
-      class="primary-button full-button"
+      class="secondary-button full-button"
       type="button"
       (click)="go('compose-sms')"
     >
       Compose SMS
     </button>
+    }
     <div class="sms-inbox">
       @if (!sms.ready() && !sms.error()) {
-      <div class="empty-state">Loading SMS outbox…</div>
+      <div class="skeleton-card" role="status" aria-label="Loading SMS outbox">
+        <ion-skeleton-text [animated]="true" style="width: 50%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 90%"></ion-skeleton-text>
+      </div>
       } @else {
       @for (message of smsMessages(); track message.id) {
       <article class="sms-thread">
@@ -1116,9 +1506,6 @@
     @if (sms.error(); as error) {
     <p class="scan-result rejected" role="alert">{{ error }}</p>
     }
-    @if (sms.error(); as error) {
-    <p class="sms-storage-error" role="alert">{{ error }}</p>
-    }
     <form class="form-stack" (ngSubmit)="sendMessage()">
       <label
         >Send to<select name="recipientMode" [(ngModel)]="recipientMode">
@@ -1129,7 +1516,7 @@
       >@if (recipientMode === 'section') {
       <label
         >Section<select name="recipientSection" [(ngModel)]="recipientSection">
-          @for (section of activeEvent().sections; track section) {
+          @for (section of eventSectionLabels(activeEvent()); track section) {
           <option [value]="section">{{ section }}</option>
           }
         </select></label
@@ -1194,6 +1581,9 @@
     <section class="pass-card">
       <span>GATHER PASS · VALID</span>@if (qrCode()) {
       <img [src]="qrCode()" [alt]="'High contrast attendance QR code for ' + activeStudent().name" /> }
+      @if (state().role === 'student') {
+      <app-avatar [src]="auth.avatar()" [name]="activeStudent().name" [size]="72" />
+      }
       <h2>{{ activeStudent().name }}</h2>
       <p>{{ activeStudent().course ?? 'Course not set' }} · {{ activeStudent().yearLevel ?? 'Year not set' }} · {{ activeStudent().section }}</p>
       <div class="pass-seat">
@@ -1211,6 +1601,118 @@
     >
       View attendance history
     </button>}
+    } @else if (page() === 'student-detail') {
+    <button class="back-link" type="button" (click)="go('students')">‹ Students</button>
+    @if (detailStudent(); as student) {
+    <section class="settings-panel profile-photo-panel">
+      <app-avatar [name]="student.name" [size]="72" />
+      <div class="profile-photo-actions">
+        <p class="eyebrow">STUDENT</p>
+        <h2>{{ student.name }}</h2>
+        <p class="setting-help">{{ student.id }} · {{ student.section }}<br />{{ localMobile(student.mobile) }}</p>
+      </div>
+    </section>
+    <section class="settings-panel">
+      <p class="eyebrow">ACCOUNT</p>
+      @if (detailAccount(); as account) {
+      <div class="detail-line"><span>Username</span><strong>{{ account.username }}</strong></div>
+      <div class="detail-line">
+        <span>Status</span>
+        <ion-chip [color]="account.disabled ? 'danger' : 'success'">{{ account.disabled ? 'Turned off' : 'Active' }}</ion-chip>
+      </div>
+      <div class="account-actions">
+        <button class="secondary-button" type="button" [disabled]="accountBusy()" (click)="setAccountDisabled(account, !account.disabled)">{{ account.disabled ? 'Turn on account' : 'Turn off account' }}</button>
+        <button class="quiet-button danger-text" type="button" [disabled]="accountBusy()" (click)="deleteAccount(account)">Delete student</button>
+      </div>
+      } @else if (accountsLoading()) {
+      <ion-skeleton-text [animated]="true" style="width: 70%"></ion-skeleton-text>
+      } @else {
+      <p class="muted">This student's account was not found.</p>
+      }
+    </section>
+    <div class="page-heading">
+      <p class="eyebrow">HISTORY</p>
+      <h2>Attendance</h2>
+    </div>
+    <app-attendance-summary [summary]="detailSummary()" />
+    } @else {
+    <app-state-panel icon="people-outline" heading="Student not found" message="They may have been deleted." actionLabel="Back to students" (action)="go('students')" />
+    }
+    } @else if (page() === 'excuses') {
+    <div class="page-heading">
+      <p class="eyebrow">STUDENT REQUESTS</p>
+      <h1>Excuse requests</h1>
+      <p class="muted">Approving one marks the student as excused for that event.</p>
+    </div>
+    <ion-segment aria-label="Filter excuse requests" [value]="excuseFilter()" (ionChange)="setExcuseFilter($event.detail.value)">
+      <ion-segment-button value="pending"><ion-label>Pending {{ pendingExcuseCount() }}</ion-label></ion-segment-button>
+      <ion-segment-button value="approved"><ion-label>Approved</ion-label></ion-segment-button>
+      <ion-segment-button value="rejected"><ion-label>Rejected</ion-label></ion-segment-button>
+    </ion-segment>
+    <div class="event-list">
+      @if (excuseLoading() && excuseList().length === 0) {
+      @for (skeleton of skeletonRows; track skeleton) {
+      <div class="skeleton-card" aria-hidden="true">
+        <ion-skeleton-text [animated]="true" style="width: 45%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 85%"></ion-skeleton-text>
+      </div>
+      }
+      } @else {
+      @for (excuse of excuseList(); track excuse.id) {
+      <button class="event-card" type="button" (click)="openExcuse(excuse)">
+        <strong class="event-card-title">{{ excuse.studentName }}</strong>
+        <span class="event-card-meta">{{ excuse.eventName }} · {{ excuse.section }}</span>
+        <span class="excuse-preview">{{ excuse.reason }}</span>
+        <ion-chip [color]="excuse.status === 'pending' ? 'warning' : excuse.status === 'approved' ? 'success' : 'danger'">{{ excuse.status === 'pending' ? 'Waiting' : excuse.status === 'approved' ? 'Approved' : 'Rejected' }}</ion-chip>
+        <span class="event-card-action">Open <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon></span>
+      </button>
+      } @empty {
+      <app-state-panel icon="chatbubble-outline" heading="No requests here" [message]="excuseFilter() === 'pending' ? 'Nothing is waiting for review.' : 'Nothing to show for this filter.'" />
+      }
+      }
+    </div>
+    } @else if (page() === 'postpone-event') {
+    <button class="back-link" type="button" (click)="go('event-details')">‹ Event</button>
+    <div class="page-heading">
+      <p class="eyebrow">CHANGE OF SCHEDULE</p>
+      <h1>Move event</h1>
+      <p class="muted">{{ activeEvent().name }} is now on {{ formatDate(activeEvent().date) }}, {{ activeEvent().startTime }}–{{ activeEvent().endTime }}.</p>
+    </div>
+    <form class="form-stack" (ngSubmit)="savePostpone()">
+      <label>New date<input name="moveDate" type="date" required [min]="minimumEventDate" [(ngModel)]="postponeForm.date" /></label>
+      <div class="form-pair">
+        <label>Starts<input name="moveStart" type="time" required [(ngModel)]="postponeForm.startTime" /></label>
+        <label>Ends<input name="moveEnd" type="time" required [(ngModel)]="postponeForm.endTime" /></label>
+      </div>
+      <label>Reason<textarea name="moveReason" rows="3" maxlength="200" required placeholder="Why is it moving?" [(ngModel)]="postponeForm.reason"></textarea></label>
+      @if (postponeError(); as moveProblem) { <p class="scan-result rejected" role="alert">{{ moveProblem }}</p> }
+      <button class="primary-button full-button" type="submit">Move event and tell students</button>
+    </form>
+    } @else if (page() === 'excuse-request') {
+    <button class="back-link" type="button" (click)="go('history')">‹ Attendance</button>
+    <div class="page-heading">
+      <p class="eyebrow">EXCUSE REQUEST</p>
+      <h1>Ask to be excused</h1>
+      <p class="muted">{{ excuseEventName() }}</p>
+    </div>
+    <form class="form-stack" (ngSubmit)="submitExcuse()">
+      <label>Why could you not attend?
+        <textarea name="excuseReason" rows="5" maxlength="500" required placeholder="Explain what happened" [(ngModel)]="excuseDraft.reason"></textarea>
+        <small>{{ excuseDraft.reason.length }}/500</small>
+      </label>
+      <div class="excuse-photo">
+        <input #excusePhoto type="file" accept="image/*" hidden (change)="onExcusePhoto($event)" />
+        @if (excuseDraft.photo) {
+        <img [src]="excuseDraft.photo" alt="The photo you attached" />
+        <button class="text-action danger-text" type="button" (click)="excuseDraft.photo = null">Remove photo</button>
+        } @else {
+        <button class="secondary-button" type="button" (click)="excusePhoto.click()">Attach a photo (optional)</button>
+        <small class="muted">For example, a medical certificate.</small>
+        }
+      </div>
+      @if (excuseError(); as excuseProblem) { <p class="scan-result rejected" role="alert">{{ excuseProblem }}</p> }
+      <button class="primary-button full-button" type="submit" [disabled]="excuseBusy()">Send request</button>
+    </form>
     } @else if (page().startsWith('settings')) {
     <div class="page-heading">
       @if (page() === 'settings') {
@@ -1229,12 +1731,106 @@
           @case ('settings-attendance') { Attendance rules }
           @case ('settings-app') { Sync status }
           @case ('settings-advanced') { Advanced settings }
+          @case ('settings-username') { Change username }
+          @case ('settings-password') { Change password }
+          @case ('settings-contact') { Change contact number }
+          @case ('settings-activity') { Activity log }
+          @case ('settings-school-year') { School year }
+          @case ('settings-organizers') { Organizers }
           @default { Account }
         }
       </h1>
-      <p class="muted">Manage this part of your school workspace.</p>
+      <p class="muted">{{ page() === 'settings-username' || page() === 'settings-password' || page() === 'settings-contact' ? 'Keep your account secure.' : 'Manage this part of your school workspace.' }}</p>
       }
     </div>
+    @if (page() === 'settings') {
+    <section class="settings-panel profile-photo-panel" aria-labelledby="profile-photo-heading">
+      <h2 id="profile-photo-heading" class="visually-hidden">Profile picture</h2>
+      <button
+        class="profile-photo-button"
+        type="button"
+        [disabled]="photoBusy()"
+        [attr.aria-label]="auth.avatar() ? 'Profile picture options: view or change' : 'Add a profile picture'"
+        (click)="openPhotoMenu()"
+      >
+        <app-avatar [src]="auth.avatar()" [name]="auth.username()" [size]="96" />
+        <span class="profile-photo-badge" aria-hidden="true"><ion-icon name="camera-outline"></ion-icon></span>
+      </button>
+      <div class="profile-photo-actions">
+        <p class="eyebrow">PROFILE</p>
+        <h2>{{ auth.username() }}</h2>
+        <p class="setting-help">{{ state().role === 'student' ? activeStudent().name : state().role === 'organizer' ? 'Organizer account' : 'Super admin account' }}</p>
+        @if (photoBusy()) {
+        <small class="muted" role="status">Saving your photo…</small>
+        }
+        @if (photoError(); as photoMessage) {
+        <p class="inline-error" role="alert">{{ photoMessage }}</p>
+        }
+      </div>
+    </section>
+    }
+    @if (page() === 'settings') {
+    <section class="settings-menu-group" aria-labelledby="settings-security-heading">
+      <h2 id="settings-security-heading">My account</h2>
+      <button class="settings-menu-row" type="button" (click)="openSecurityForm('settings-username')">
+        <span class="settings-menu-icon"><ion-icon name="person-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Change username</strong><small>Currently {{ auth.username() }}</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="openSecurityForm('settings-password')">
+        <span class="settings-menu-icon"><ion-icon name="shield-checkmark-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Change password</strong><small>Use at least 8 characters</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      @if (state().role === 'student') {
+      <button class="settings-menu-row" type="button" (click)="openContactForm()">
+        <span class="settings-menu-icon"><ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Change contact number</strong><small>Currently {{ currentMobileLocal() }}</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      }
+    </section>
+    } @else if (page() === 'settings-username') {
+    <section class="settings-panel">
+      <form class="auth-form" (ngSubmit)="saveNewUsername()">
+        <label>New username<input name="newUsername" autocomplete="username" required minlength="3" maxlength="64" [(ngModel)]="securityForm.newUsername" /></label>
+        <label>Current password<input name="currentPasswordForUsername" type="password" autocomplete="current-password" required [(ngModel)]="securityForm.currentPassword" /></label>
+        @if (securityError(); as securityMessage) { <p class="inline-error" role="alert">{{ securityMessage }}</p> }
+        <button class="primary-button full-button" type="submit" [disabled]="securityBusy()">Save username</button>
+      </form>
+    </section>
+    } @else if (page() === 'settings-contact') {
+    <section class="settings-panel">
+      @if (contactStep() === 'enter') {
+      <form class="auth-form" (ngSubmit)="sendContactCode()">
+        <p class="setting-help">Current number: <strong>{{ currentMobileLocal() }}</strong>. We will text a 6-digit code to the new number from your phone, using your own load.</p>
+        <label>New contact number<input name="newMobile" type="tel" inputmode="numeric" maxlength="11" pattern="09[0-9]{9}" placeholder="09XXXXXXXXX" autocomplete="tel" required [(ngModel)]="contactForm.mobile" (input)="normalizeContactMobile($event)" /></label>
+        <label>Current password<input name="contactPassword" type="password" autocomplete="current-password" required [(ngModel)]="contactForm.currentPassword" /></label>
+        @if (securityError(); as securityMessage) { <p class="inline-error" role="alert">{{ securityMessage }}</p> }
+        <button class="primary-button full-button" type="submit" [disabled]="contactBusy()">Text me a code</button>
+      </form>
+      } @else {
+      <form class="auth-form" (ngSubmit)="confirmContactCode()">
+        <p class="setting-help">We texted a 6-digit code to <strong>{{ contactTarget() }}</strong>. Open it on the phone that has that number and type it here. It expires in 10 minutes.</p>
+        <label>6-digit code<input name="contactCode" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" required [(ngModel)]="contactForm.code" (input)="normalizeContactCode($event)" /></label>
+        @if (securityError(); as securityMessage) { <p class="inline-error" role="alert">{{ securityMessage }}</p> }
+        <button class="primary-button full-button" type="submit" [disabled]="contactBusy()">Confirm number</button>
+        <button class="text-action" type="button" [disabled]="contactBusy()" (click)="resendContactCode()">Send a new code</button>
+        <button class="text-action" type="button" (click)="contactStep.set('enter'); securityError.set(null)">Use a different number</button>
+      </form>
+      }
+    </section>
+    } @else if (page() === 'settings-password') {
+    <section class="settings-panel">
+      <form class="auth-form" (ngSubmit)="saveNewPassword()">
+        <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required [(ngModel)]="securityForm.currentPassword" /></label>
+        <label>New password<input name="newPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="128" [(ngModel)]="securityForm.newPassword" /></label>
+        <label>Confirm new password<input name="confirmPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="128" [(ngModel)]="securityForm.confirmPassword" /></label>
+        @if (securityError(); as securityMessage) { <p class="inline-error" role="alert">{{ securityMessage }}</p> }
+        <button class="primary-button full-button" type="submit" [disabled]="securityBusy()">Save password</button>
+      </form>
+    </section>
+    }
     @if (state().role === 'super_admin') {
     @if (page() === 'settings') {
     <section class="settings-menu-group" aria-labelledby="settings-manage-heading">
@@ -1252,6 +1848,29 @@
       <button class="settings-menu-row" type="button" (click)="go('announcements')">
         <span class="settings-menu-icon"><ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon></span>
         <span><strong>Announcements</strong><small>Publish school updates</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+    </section>
+    <section class="settings-menu-group" aria-labelledby="settings-people-heading">
+      <h2 id="settings-people-heading">People &amp; activity</h2>
+      <button class="settings-menu-row" type="button" (click)="go('settings-organizers')">
+        <span class="settings-menu-icon"><ion-icon name="person-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Organizers</strong><small>Turn accounts off, see what they did</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="go('excuses')">
+        <span class="settings-menu-icon"><ion-icon name="shield-checkmark-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Excuse requests</strong><small>{{ pendingExcuseCount() }} waiting for review</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="go('settings-school-year')">
+        <span class="settings-menu-icon"><ion-icon name="calendar-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>School year</strong><small>Move students up a year automatically</small></span>
+        <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
+      </button>
+      <button class="settings-menu-row" type="button" (click)="go('settings-activity')">
+        <span class="settings-menu-icon"><ion-icon name="time-outline" aria-hidden="true"></ion-icon></span>
+        <span><strong>Activity log</strong><small>Who did what, and when</small></span>
         <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
       </button>
     </section>
@@ -1275,6 +1894,122 @@
         <span><strong>Advanced</strong><small>API address and workspace reset</small></span>
         <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
       </button>
+    </section>
+    } @else if (page() === 'settings-school-year') {
+    <section class="settings-panel">
+      <p class="setting-help">
+        When the school year ends, every student moves up one year level on their own:
+        1st → 2nd → 3rd → 4th, in the same section. <strong>4th year students graduate, and their accounts and attendance are deleted.</strong>
+        Past events and reports keep who was required at the time.
+      </p>
+      @if (schoolYearError(); as yearProblem) {
+      <app-state-panel tone="error" icon="alert-circle-outline" heading="Something went wrong" [message]="yearProblem" actionLabel="Try again" (action)="loadSchoolYear()" />
+      }
+      @if (schoolYearLoading() && !schoolYear()) {
+      <div class="skeleton-card" role="status" aria-label="Loading the school year settings">
+        <ion-skeleton-text [animated]="true" style="width: 50%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 85%"></ion-skeleton-text>
+      </div>
+      } @else if (schoolYear(); as year) {
+      <form class="form-stack" (ngSubmit)="saveSchoolYear()">
+        <label class="remember-row">
+          <input type="checkbox" name="promotionOn" [(ngModel)]="schoolYearForm.enabled" />
+          <span>Promote students automatically</span>
+        </label>
+        <label>The school year ends on
+          <input name="yearEnd" type="date" [min]="year.today" [disabled]="!schoolYearForm.enabled" [(ngModel)]="schoolYearForm.endDate" />
+        </label>
+        <p class="muted">It runs at 1:00 AM, the night after that date.</p>
+        @if (year.lastPromotedFor) {
+        <p class="status-banner status-banner-pending" role="status">Last promotion: the school year that ended {{ formatDate(year.lastPromotedFor) }}.</p>
+        }
+        <button class="primary-button full-button" type="submit" [disabled]="schoolYearBusy() || !year.available">Save</button>
+        @if (!year.available) { <p class="inline-error" role="alert">Apply the latest database update first.</p> }
+      </form>
+      @if (year.preview; as preview) {
+      <div class="promotion-preview" aria-label="If promotion ran today">
+        <p class="eyebrow">IF IT RAN TODAY</p>
+        @for (step of preview.steps; track step.from) {
+        <div class="promotion-row" [class.promotion-graduate]="!step.to">
+          <span>{{ step.from }} {{ step.to ? '→ ' + step.to : '→ graduate (deleted)' }}</span>
+          <strong>{{ step.students }}</strong>
+        </div>
+        }
+        @if (preview.newSections) { <p class="muted">{{ preview.newSections }} missing section{{ preview.newSections === 1 ? '' : 's' }} will be created.</p> }
+        @if (preview.skipped) { <p class="muted">{{ preview.skipped }} student{{ preview.skipped === 1 ? '' : 's' }} without a known section will not be moved.</p> }
+      </div>
+      }
+      }
+    </section>
+    } @else if (page() === 'settings-activity') {
+    <section class="settings-panel">
+      <ion-segment aria-label="Filter the activity log" [value]="auditFilter()" (ionChange)="setAuditFilter($event.detail.value)">
+        <ion-segment-button value="all"><ion-label>All</ion-label></ion-segment-button>
+        <ion-segment-button value="events"><ion-label>Events</ion-label></ion-segment-button>
+        <ion-segment-button value="attendance"><ion-label>Check-ins</ion-label></ion-segment-button>
+        <ion-segment-button value="accounts"><ion-label>Accounts</ion-label></ion-segment-button>
+        <ion-segment-button value="excuses"><ion-label>Excuses</ion-label></ion-segment-button>
+      </ion-segment>
+      @if (auditError(); as auditProblem) {
+      <app-state-panel tone="error" icon="alert-circle-outline" heading="Couldn't load the activity log" [message]="auditProblem" actionLabel="Try again" (action)="loadAudit(true)" />
+      } @else if (auditLoading() && auditEntries().length === 0) {
+      <div class="skeleton-card" role="status" aria-label="Loading the activity log">
+        <ion-skeleton-text [animated]="true" style="width: 40%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 90%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 70%"></ion-skeleton-text>
+      </div>
+      } @else {
+      <div class="audit-list">
+        @for (entry of filteredAudit(); track entry.id) {
+        <article class="audit-row">
+          <div class="audit-meta">
+            <strong>{{ entry.actorName }}</strong>
+            <ion-chip [color]="entry.actorRole === 'super_admin' ? 'primary' : entry.actorRole === 'organizer' ? 'tertiary' : 'medium'">{{ entry.actorRole === 'super_admin' ? 'Admin' : entry.actorRole === 'organizer' ? 'Organizer' : entry.actorRole === 'system' ? 'System' : 'Student' }}</ion-chip>
+            <small>{{ formatDateTime(entry.at) }}</small>
+          </div>
+          <p>{{ entry.summary }}</p>
+        </article>
+        } @empty {
+        <app-state-panel icon="time-outline" heading="Nothing here yet" message="Actions are listed here as they happen." />
+        }
+      </div>
+      @if (auditNext()) {
+      <button class="secondary-button full-button" type="button" [disabled]="auditLoading()" (click)="loadAudit(false)">Load older entries</button>
+      }
+      }
+    </section>
+    } @else if (page() === 'settings-organizers') {
+    <section class="settings-panel">
+      <button class="primary-button full-button" type="button" (click)="go('settings-account-create')">Create organizer account</button>
+      @if (accountsLoading() && managedAccounts().length === 0) {
+      <div class="skeleton-card" role="status" aria-label="Loading organizers">
+        <ion-skeleton-text [animated]="true" style="width: 50%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 85%"></ion-skeleton-text>
+      </div>
+      }
+      @for (item of organizerList(); track item.account.username) {
+      <article class="organizer-card">
+        <div class="organizer-head">
+          <app-avatar [name]="item.account.username" [size]="40" />
+          <strong>{{ item.account.username }}</strong>
+          <ion-chip [color]="item.account.disabled ? 'danger' : 'success'">{{ item.account.disabled ? 'Turned off' : 'Active' }}</ion-chip>
+        </div>
+        <div class="organizer-stats">
+          <span><strong>{{ item.events }}</strong> event{{ item.events === 1 ? '' : 's' }} created</span>
+          <span><strong>{{ item.scans }}</strong> check-in{{ item.scans === 1 ? '' : 's' }} recorded</span>
+        </div>
+        <div class="account-actions">
+          <button class="secondary-button" type="button" [disabled]="accountBusy()" (click)="setAccountDisabled(item.account, !item.account.disabled)">{{ item.account.disabled ? 'Turn on' : 'Turn off' }}</button>
+          <button class="secondary-button" type="button" (click)="selectManagedAccount(item.account.username); go('settings-account-reset')">Reset password</button>
+          <button class="quiet-button danger-text" type="button" [disabled]="accountBusy()" (click)="deleteAccount(item.account)">Delete</button>
+        </div>
+      </article>
+      } @empty {
+      @if (!accountsLoading()) {
+      <app-state-panel icon="people-outline" heading="No organizers yet" message="Create an organizer account so staff can scan and make events." />
+      }
+      }
+      @if (accountError(); as organizerProblem) { <p class="inline-error" role="alert">{{ organizerProblem }}</p> }
     </section>
     } @else if (page() === 'settings-accounts') {
     <section class="settings-menu-group">
@@ -1348,7 +2083,9 @@
       <div class="managed-account-list" aria-label="Accounts to reset">
         @if (accountsLoading()) {
         <div class="managed-account-skeleton" role="status" aria-label="Loading accounts">
-          <span></span><span></span><span></span>
+          <ion-skeleton-text [animated]="true" style="width: 100%"></ion-skeleton-text>
+          <ion-skeleton-text [animated]="true" style="width: 100%"></ion-skeleton-text>
+          <ion-skeleton-text [animated]="true" style="width: 100%"></ion-skeleton-text>
         </div>
         } @else {
         @for (account of visibleManagedAccounts(); track account.username) {
@@ -1392,26 +2129,59 @@
     } @else if (page() === 'settings-sections') {
     <section class="settings-panel">
       <p class="setting-help">These sections appear in student signup and event requirements.</p>
-      <form class="form-stack" (ngSubmit)="saveSection()">
+      <form class="form-stack section-form" id="section-form" (ngSubmit)="saveSection()">
         <label>Course<select name="sectionCourse" required [(ngModel)]="sectionForm.course">
           @for (course of courses; track course) { <option [value]="course">{{ course }}</option> }
         </select></label>
         <label>Year level<select name="sectionYear" required [(ngModel)]="sectionForm.yearLevel">
           @for (year of yearLevels; track year) { <option [value]="year">{{ year }}</option> }
         </select></label>
-        <label>Section name<input name="sectionName" required maxlength="32" [(ngModel)]="sectionForm.name" placeholder="A" /></label>
+        <label>Section name<input id="section-name-input" name="sectionName" required maxlength="32" [(ngModel)]="sectionForm.name" placeholder="A" /></label>
         <button class="primary-button full-button" type="submit">{{ editingSectionId ? 'Save section' : 'Add section' }}</button>
       </form>
       @if (editingSectionId) { <button class="text-action" type="button" (click)="cancelSectionEdit()">Cancel edit</button> }
       @if (sectionError(); as error) { <p class="inline-error" role="alert">{{ error }}</p> }
-      <div class="event-list">
-        @for (section of schoolSections(); track section.id) {
-        <button class="settings-menu-row" type="button" (click)="editSection(section)">
-          <span><strong>{{ section.course }} · {{ section.yearLevel }} · {{ section.name }}</strong><small>Edit section</small></span>
-          <ion-icon name="chevron-forward-outline" aria-hidden="true"></ion-icon>
-        </button>
-        } @empty { <p class="empty-state">No sections yet. Add the first course and section above.</p> }
+      @if (sectionsLoading() && schoolSections().length === 0) {
+      <div class="skeleton-card" role="status" aria-label="Loading sections">
+        <ion-skeleton-text [animated]="true" style="width: 40%"></ion-skeleton-text>
+        <ion-skeleton-text [animated]="true" style="width: 80%"></ion-skeleton-text>
       </div>
+      } @else {
+      <div class="section-groups">
+        @for (group of sectionGroups(); track group.course) {
+        <details class="section-group" [open]="group.open">
+          <summary>
+            <strong>{{ group.course }}</strong>
+            <span>{{ group.count }} section{{ group.count === 1 ? '' : 's' }}</span>
+          </summary>
+          @for (year of group.years; track year.yearLevel) {
+          <div class="section-year">
+            <p class="section-year-title">{{ year.yearLevel }}</p>
+            <div class="section-chip-row">
+              @for (section of year.sections; track section.id) {
+              <button
+                class="pick-chip"
+                type="button"
+                [class.pick-chip-on]="editingSectionId === section.id"
+                [attr.aria-label]="'Edit ' + sectionLabel(section)"
+                (click)="editSection(section)"
+              >
+                {{ section.name }}
+              </button>
+              }
+            </div>
+          </div>
+          }
+        </details>
+        } @empty {
+        <app-state-panel
+          icon="school-outline"
+          heading="No sections yet"
+          message="Add the first course and section above."
+        />
+        }
+      </div>
+      }
     </section>
     } @else if (page() === 'settings-attendance') {
     @if (activeEvent(); as event) {
@@ -1440,18 +2210,14 @@
     </section>
     <section class="settings-panel danger-panel">
       <p class="eyebrow">DESTRUCTIVE ACTION</p>
-      <h2>Clear workspace</h2>
-      <p class="setting-help">This clears students, events, attendance, and messages from this workspace. Type CLEAR to confirm.</p>
-      <label class="select-label">Type CLEAR to confirm<input name="clearWorkspaceConfirmation" autocomplete="off" [(ngModel)]="clearWorkspaceConfirmation" /></label>
-      <button class="danger-button full-button" type="button" [disabled]="clearWorkspaceConfirmation !== 'CLEAR'" (click)="resetWorkspace()">Clear all workspace data</button>
+      <h2>Reset shared app</h2>
+      <p class="setting-help">This permanently deletes every non-admin account, student, event, attendance record, message, and announcement from the shared app. The signed-in admin account is kept. Type DELETE to confirm.</p>
+      @if (workspaceSync.error(); as resetError) { <p class="inline-error" role="alert">{{ resetError }}</p> }
+      <label class="select-label">Type DELETE to confirm<input name="clearWorkspaceConfirmation" autocomplete="off" [(ngModel)]="clearWorkspaceConfirmation" /></label>
+      <button class="danger-button full-button" type="button" [disabled]="clearWorkspaceConfirmation !== 'DELETE' || resetBusy() || !isOnline()" (click)="resetWorkspace()">{{ resetBusy() ? 'Resetting shared app…' : 'Delete all shared data except admin' }}</button>
     </section>
     }
-    } @else {
-    <section class="settings-panel">
-      <p class="eyebrow">PROFILE</p>
-      <h2>{{ auth.username() }}</h2>
-      <p class="setting-help">{{ state().role === 'student' ? (activeStudent()?.name ?? 'Student profile') : 'Organizer account' }}</p>
-    </section>
+    } @else if (page() === 'settings') {
     <section class="settings-panel">
       <p class="eyebrow">SYNC STATUS</p>
       <div class="setting-row"><span class="connection-label"><i [class.offline-dot]="!isOnline()"></i>{{ isOnline() ? 'Online' : 'Offline' }}</span><small>{{ workspaceSync.pending() ? 'Changes are waiting to sync.' : 'Your changes are up to date.' }}</small></div>
@@ -1460,78 +2226,99 @@
     </section>
     }
     <section class="settings-panel sign-out-panel">
-      <button class="danger-button full-button" type="button" (click)="signOut()">Sign out</button>
+      <button class="danger-button full-button" type="button" (click)="confirmSignOut()">Sign out</button>
     </section>
     }
   </main>
-  <nav class="bottom-tabs" aria-label="Main navigation">
-    @if (state().role === 'student') {
-    <button [class.tab-active]="page() === 'home'" type="button" (click)="go('home')">
-      <ion-icon name="home-outline"></ion-icon><span>Home</span>
-    </button>
-    <button [class.tab-active]="page() === 'events' || page() === 'event-details'" type="button" (click)="go('events')">
-      <ion-icon name="calendar-outline" aria-hidden="true"></ion-icon><span>Events</span>
-    </button>
-    <button [class.tab-active]="page() === 'announcements'" type="button" (click)="go('announcements')">
-      <ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon><span>Updates</span>
-      @if (visibleAnnouncements().length) { <b class="tab-badge">{{ visibleAnnouncements().length }}</b> }
-    </button>
-    <button [class.tab-active]="page() === 'settings'" type="button" (click)="go('settings')">
-      <ion-icon name="settings-outline" aria-hidden="true"></ion-icon><span>Settings</span>
-    </button>
-    } @else if (state().role === 'organizer') {
-    <button [class.tab-active]="page() === 'home'" type="button" (click)="go('home')">
-      <ion-icon name="home-outline" aria-hidden="true"></ion-icon><span>Home</span>
-    </button>
-    <button [class.tab-active]="page() === 'events' || page() === 'event-details'" type="button" (click)="go('events')">
-      <ion-icon name="calendar-outline" aria-hidden="true"></ion-icon><span>Events</span>
-    </button>
-    <button
-      class="tab-scan"
-      [class.tab-active]="page() === 'scan'"
-      type="button"
-      (click)="go('scan')"
-    >
-      <ion-icon name="scan-outline" aria-hidden="true"></ion-icon><span>Scan</span></button>
-    <button [class.tab-active]="page() === 'settings'" type="button" (click)="go('settings')">
-      <ion-icon name="settings-outline" aria-hidden="true"></ion-icon><span>Settings</span>
-    </button>
-    } @else {
-    <button [class.tab-active]="page() === 'home'" type="button" (click)="go('home')">
-      <ion-icon name="home-outline" aria-hidden="true"></ion-icon><span>Home</span>
-    </button>
-    <button [class.tab-active]="page() === 'events' || page() === 'event-details'" type="button" (click)="go('events')">
-      <ion-icon name="calendar-outline" aria-hidden="true"></ion-icon><span>Events</span>
-      @if (pendingEvents().length) { <b class="tab-badge">{{ pendingEvents().length }}</b> }
-    </button>
-    <button
-      [class.tab-active]="page() === 'scan'"
-      type="button"
-      (click)="go('scan')"
-    >
-      <ion-icon name="scan-outline" aria-hidden="true"></ion-icon><span>Scan</span>
-    </button>
-    <button
-      [class.tab-active]="page() === 'announcements'"
-      type="button"
-      (click)="go('announcements')"
-    >
-      <ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon><span>Updates</span>
-      @if (visibleAnnouncements().length) { <b class="tab-badge">{{ visibleAnnouncements().length }}</b> }
-    </button>
-    <button
-      [class.tab-active]="page() === 'settings'"
-      type="button"
-      (click)="go('settings')"
-    >
-      <ion-icon name="settings-outline" aria-hidden="true"></ion-icon><span>Settings</span>
-    </button>
-    }
+  <input #takePhoto type="file" accept="image/*" capture="user" hidden (change)="onPhotoSelected($event)" />
+  <input #choosePhoto type="file" accept="image/*" hidden (change)="onPhotoSelected($event)" />
+  <ion-modal
+    class="photo-viewer-modal"
+    [isOpen]="photoViewerOpen()"
+    (didDismiss)="photoViewerOpen.set(false)"
+  >
+    <ng-template>
+      <div class="photo-viewer">
+        @if (auth.avatar()) {
+        <img [src]="auth.avatar()" [alt]="auth.username() + ' profile picture'" />
+        }
+        <div class="photo-viewer-actions">
+          <button class="secondary-button" type="button" (click)="photoViewerOpen.set(false)">Close</button>
+          <button class="text-action danger-text" type="button" (click)="removePhotoFromViewer()">Remove photo</button>
+        </div>
+      </div>
+    </ng-template>
+  </ion-modal>
+  <ion-modal
+    class="photo-menu-modal"
+    [isOpen]="photoMenuOpen()"
+    (didDismiss)="photoMenuOpen.set(false)"
+  >
+    <ng-template>
+      <div class="photo-menu" role="dialog" aria-labelledby="photo-menu-title">
+        <button class="photo-menu-close" type="button" aria-label="Close" (click)="photoMenuOpen.set(false)">
+          <ion-icon name="close-outline" aria-hidden="true"></ion-icon>
+        </button>
+        <h2 id="photo-menu-title">Profile photo</h2>
+        @if (auth.avatar()) {
+        <button class="primary-button" type="button" (click)="pickPhoto('view')">View photo</button>
+        <button class="secondary-button" type="button" (click)="pickPhoto('choose')">Change photo</button>
+        } @else {
+        <button class="primary-button" type="button" (click)="pickPhoto('take')">Take photo</button>
+        <button class="secondary-button" type="button" (click)="pickPhoto('choose')">Choose photo</button>
+        }
+      </div>
+    </ng-template>
+  </ion-modal>
+  <ion-modal
+    class="excuse-modal"
+    [isOpen]="excuseDetail() !== null"
+    (didDismiss)="excuseDetail.set(null)"
+  >
+    <ng-template>
+      @if (excuseDetail(); as excuse) {
+      <div class="excuse-sheet" role="dialog" aria-labelledby="excuse-title">
+        <button class="photo-menu-close" type="button" aria-label="Close" (click)="excuseDetail.set(null)">
+          <ion-icon name="close-outline" aria-hidden="true"></ion-icon>
+        </button>
+        <p class="eyebrow">{{ excuse.section }}</p>
+        <h2 id="excuse-title">{{ excuse.studentName }}</h2>
+        <p class="muted">{{ excuse.eventName }}</p>
+        <p class="excuse-reason">{{ excuse.reason }}</p>
+        @if (excuse.photo) {
+        <img class="excuse-image" [src]="excuse.photo" alt="Photo attached to the request" />
+        } @else if (excuse.hasPhoto) {
+        <ion-skeleton-text [animated]="true" style="width: 100%; height: 160px"></ion-skeleton-text>
+        }
+        @if (excuse.status === 'pending') {
+        <div class="photo-viewer-actions">
+          <button class="primary-button" type="button" [disabled]="excuseBusy()" (click)="decideExcuse('approved')">Approve</button>
+          <button class="secondary-button reject-button" type="button" [disabled]="excuseBusy()" (click)="decideExcuse('rejected')">Reject</button>
+        </div>
+        } @else {
+        <p class="muted">{{ excuse.status === 'approved' ? 'Approved' : 'Rejected' }} by {{ excuse.reviewedBy }}{{ excuse.reviewerNote ? ': ' + excuse.reviewerNote : '' }}</p>
+        }
+      </div>
+      }
+    </ng-template>
+  </ion-modal>
+  <nav class="bottom-tabs" id="main-tabs" aria-label="Main navigation">
+    <ion-tab-bar [selectedTab]="activeTab()">
+      @for (tab of tabs(); track tab.screen) {
+      <ion-tab-button
+        [tab]="tab.screen"
+        [class.tab-scan]="tab.scan"
+        [attr.aria-label]="tab.label + (tab.badge ? ', ' + tab.badge + ' new' : '')"
+        (click)="go(tab.screen)"
+      >
+        <ion-icon [name]="tab.icon" aria-hidden="true"></ion-icon>
+        <ion-label>{{ tab.label }}</ion-label>
+        @if (tab.badge) {
+        <ion-badge color="danger" aria-hidden="true">{{ tab.badge }}</ion-badge>
+        }
+      </ion-tab-button>
+      }
+    </ion-tab-bar>
   </nav>
-  @if (toastMessage(); as message) {
-  <div class="toast-message" role="status" aria-live="polite">
-    <ion-icon name="checkmark-circle-outline" aria-hidden="true"></ion-icon>{{ message }}
-  </div>
-  }
 </div>
 }

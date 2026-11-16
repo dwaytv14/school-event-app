@@ -1,0 +1,21 @@
+:host {
+  display: inline-flex;
+  flex: none;
+}
+.avatar-image,
+.avatar-initials {
+  border-radius: 50%;
+}
+.avatar-image {
+  display: block;
+  object-fit: cover;
+  background: #e8ecf5;
+}
+.avatar-initials {
+  display: grid;
+  place-items: center;
+  background: #dfe6f7;
+  color: #1c3894;
+  font-weight: 800;
+  line-height: 1;
+}
