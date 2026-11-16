@@ -274,6 +274,15 @@ export class WorkspaceApiService {
     );
   }
 
+  deleteEvent(token: string, eventId: string): Promise<{ deleted: boolean }> {
+    return firstValueFrom(
+      this.http.delete<{ deleted: boolean }>(
+        `${this.baseUrl()}/events/${encodeURIComponent(eventId)}`,
+        { headers: this.authorization(token) },
+      ),
+    );
+  }
+
   auditLog(
     token: string,
     before?: string,

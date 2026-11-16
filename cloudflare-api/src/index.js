@@ -1007,6 +1007,43 @@ async function deleteManagedUser(admin, env, username) {
   return json({ username: target.username, deleted: true });
 }
 
+// ---------------- delete an event ----------------
+async function deleteEvent(user, env, eventId) {
+  if (user.role !== 'super_admin' && user.role !== 'organizer') {
+    return json({ error: 'You cannot delete events.' }, 403);
+  }
+  let deletedName = '';
+  const outcome = await mutateWorkspace(env, user.organization_id, (state) => {
+    const event = (state.events ?? []).find((item) => item.id === eventId);
+    if (!event) return { error: 'That event was not found.', status: 404 };
+    const status = event.approvalStatus ?? 'approved';
+    if (user.role === 'organizer') {
+      if (event.createdBy !== user.id || status === 'approved') {
+        return { error: 'You can only delete your own events that are not approved.', status: 403 };
+      }
+    }
+    const hasAttendance = (state.attendance ?? []).some((record) => record.eventId === eventId);
+    if (status === 'approved' && hasAttendance) {
+      return { error: 'This event already has attendance. Cancel it instead of deleting it.', status: 409 };
+    }
+    deletedName = event.name;
+    state.events = state.events.filter((item) => item.id !== eventId);
+    state.attendance = (state.attendance ?? []).filter((record) => record.eventId !== eventId);
+    if (state.selectedEventId === eventId) state.selectedEventId = state.events[0]?.id ?? '';
+    return null;
+  });
+  if (outcome.error) return json({ error: outcome.error }, outcome.status ?? 500);
+  try {
+    await env.DB.prepare('DELETE FROM excuse_requests WHERE organization_id = ? AND event_id = ?')
+      .bind(user.organization_id, eventId)
+      .run();
+  } catch {
+    // No excuse table yet.
+  }
+  await audit(env, user, 'event_deleted', `Deleted the event "${deletedName}"`);
+  return json({ deleted: true });
+}
+
 // ---------------- excuse requests ----------------
 function excuseRow(row, withPhoto = false) {
   return {
@@ -2195,6 +2232,10 @@ async function handle(request, env) {
   }
   if (path === '/api/account/password' && request.method === 'POST') {
     return changeOwnPassword(request, user, env);
+  }
+  const eventMatch = path.match(/^\/api\/events\/([^/]+)$/);
+  if (eventMatch && request.method === 'DELETE') {
+    return deleteEvent(user, env, decodeURIComponent(eventMatch[1]));
   }
   const adminUserMatch = path.match(/^\/api\/admin\/users\/([^/]+)(?:\/(disabled))?$/);
   if (adminUserMatch) {

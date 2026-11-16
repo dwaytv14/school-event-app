@@ -100,7 +100,7 @@ export abstract class AttendancePart extends CommsPart {
   scanStudent(studentId: string): void {
     const event = this.activeEvent();
     if (!event) return;
-    if (this.auth.role() === 'organizer' && event.approvalStatus !== 'approved') {
+    if (!this.actions().scan) {
       this.scanResult.set({
         accepted: false,
         tone: 'rejected',
@@ -335,10 +335,7 @@ export abstract class AttendancePart extends CommsPart {
     return isStudentRequired(event, this.activeStudent());
   }
   canScanActiveEvent(): boolean {
-    if (this.activeEvent()?.cancelled) return false;
-    return this.auth.role() === 'super_admin' ||
-      (this.auth.role() === 'organizer' &&
-        this.activeEvent()?.approvalStatus === 'approved');
+    return this.actions().scan;
   }
   // ---- Live attendance monitor (admin and organizers) ----
   protected eventEnded(event: SchoolEvent): boolean {

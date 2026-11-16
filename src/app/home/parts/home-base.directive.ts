@@ -5,6 +5,7 @@ import {
   computed,
   signal,
 } from '@angular/core';
+import { eventActions } from '../../core/services/event-actions';
 import { ActivatedRoute, Router } from '@angular/router';
 import { AlertController, LoadingController, ToastController } from '@ionic/angular';
 import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
@@ -24,7 +25,7 @@ import { SeatingService } from '../../core/services/seating.service';
 import { SmsService } from '../../core/services/sms.service';
 import { WorkspaceSyncService } from '../../core/services/workspace-sync.service';
 import { WorkspaceApiService, SchoolSection } from '../../core/services/workspace-api.service';
-import { AttendanceStatus, Student, UserRole } from '../../core/models/school-event.models';
+import { AttendanceStatus, SchoolEvent, Student, UserRole } from '../../core/models/school-event.models';
 import { Directive } from '@angular/core';
 import { TabItem, DisplayScan } from '../home.types';
 
@@ -68,6 +69,18 @@ export abstract class HomeBaseDirective {
       this.state().events.find(
         (item) => item.id === this.state().selectedEventId,
       ) ?? this.state().events[0],
+  );
+  /** What the signed-in person may do with the open event, by status and role. */
+  readonly actions = computed(() => {
+    const event = this.activeEvent();
+    const hasAttendance = !!event && this.state().attendance.some((record) => record.eventId === event.id);
+    return eventActions(event, this.auth.role(), this.auth.userId(), hasAttendance);
+  });
+  /** Approved events that are still on: the only ones that can be scanned, monitored or reported. */
+  readonly workingEvents = computed(() =>
+    this.state().events.filter(
+      (event) => (event.approvalStatus ?? 'approved') === 'approved' && !event.cancelled,
+    ),
   );
   readonly activeStudent = computed<Student>(
     () =>
@@ -337,12 +350,25 @@ export abstract class HomeBaseDirective {
   protected homeScreenForRole(): string {
     return this.auth.role() === 'student' ? 'home' : 'home';
   }
+  /** Staff pages that need a live event switch to one if the open event cannot be used. */
+  protected ensureWorkingEvent(screen: string): void {
+    if (!['scan', 'attendance', 'reports', 'seating'].includes(screen)) return;
+    if (this.auth.role() === 'student' || !this.auth.role()) return;
+    if (this.actions().scan) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const list = [...this.workingEvents()].sort((a, b) => {
+      const rank = (e: SchoolEvent) => (e.date === today ? 0 : e.date > today ? 1 : 2);
+      return rank(a) - rank(b) || (rank(a) === 2 ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date));
+    });
+    if (list.length) this.events.select(list[0].id);
+  }
   go(screen: string): void {
     const role = this.auth.role();
     if (role && !this.allowedScreens(role).includes(screen)) {
       screen = this.homeScreenForRole();
     }
     this.stopScanner();
+    this.ensureWorkingEvent(screen);
     void this.router.navigate(['/workspace', screen]);
   }
   protected stopScanner(): void {

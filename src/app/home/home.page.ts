@@ -138,7 +138,8 @@ export class HomePage extends AuthPart implements OnInit, OnDestroy {
         if (this.auth.hasSavedSession() && !this.sessionChecked) {
           // A saved session is still being verified; remember where to return.
           this.pendingScreen = screen;
-          this.page.set(screen);
+          this.ensureWorkingEvent(screen);
+      this.page.set(screen);
           return;
         }
         this.page.set('login');

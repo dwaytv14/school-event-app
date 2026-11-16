@@ -284,6 +284,10 @@
           <span class="event-card-meta">{{ formatDate(event.date) }} · {{ event.startTime }}–{{ event.endTime }} · {{ event.venue }}</span>
           @if (event.approvalStatus === 'pending') {
           <ion-chip color="warning">Pending approval</ion-chip>
+          } @else if (event.approvalStatus === 'rejected') {
+          <ion-chip color="danger">Rejected</ion-chip>
+          } @else if (event.cancelled) {
+          <ion-chip color="danger">Cancelled</ion-chip>
           } @else {
           <ion-chip color="success">Approved</ion-chip>
           }
@@ -828,30 +832,43 @@
       </div>
     </section>
     <div class="action-stack">
-      <button
-        class="primary-button full-button"
-        type="button"
-        [disabled]="state().role !== 'student' && !canScanActiveEvent()"
-        (click)="go(state().role !== 'student' ? 'scan' : 'my-qr')"
-      >
-        {{ state().role !== 'student' ? (canScanActiveEvent() ? 'Scan attendance' : (activeEvent().cancelled ? 'Event cancelled' : 'Scanning available after approval')) : 'Open my student
-        pass' }}</button
-      >@if (state().role !== 'student') {
+      @if (state().role === 'student') {
+      <button class="primary-button full-button" type="button" (click)="go('my-qr')">Open my student pass</button>
+      } @else {
+      @if (actions().approve) {
+      <button class="primary-button full-button" type="button" (click)="approveEvent(activeEvent().id)">Approve event</button>
+      }
+      @if (actions().reject) {
+      <button class="secondary-button full-button" type="button" (click)="rejectEvent(activeEvent().id)">Reject event</button>
+      }
+      @if (actions().scan) {
+      <button class="primary-button full-button" type="button" (click)="go('scan')">Scan attendance</button>
+      }
+      @if (actions().monitor) {
       <button class="secondary-button full-button" type="button" (click)="go('attendance')">Live attendance</button>
+      }
+      @if (actions().report) {
       <button class="secondary-button full-button" type="button" (click)="go('reports')">Attendance report</button>
+      }
+      @if (actions().seating) {
       <button class="secondary-button full-button" type="button" (click)="go('seating')">View seating map</button>
       }
-      @if (canEditEvent(activeEvent())) {
-      <button class="quiet-button full-button" type="button" (click)="editEvent()">
-        {{ state().role === 'organizer' ? 'Edit and resubmit' : 'Edit event details' }}
+      @if (actions().edit) {
+      <button class="secondary-button full-button" type="button" (click)="editEvent()">
+        {{ activeEvent().approvalStatus === 'approved' ? 'Change schedule or details' : (state().role === 'organizer' ? 'Edit and resubmit' : 'Change schedule or details') }}
       </button>
       }
-      @if (state().role === 'super_admin') {
-      @if (activeEvent().cancelled) {
-      <button class="secondary-button full-button" type="button" (click)="reinstateActiveEvent()">Reinstate event</button>
-      } @else {
+      @if (actions().move) {
       <button class="secondary-button full-button" type="button" (click)="openPostpone()">Move to another date</button>
+      }
+      @if (actions().reinstate) {
+      <button class="secondary-button full-button" type="button" (click)="reinstateActiveEvent()">Reinstate event</button>
+      }
+      @if (actions().cancel) {
       <button class="quiet-button full-button danger-text" type="button" (click)="cancelActiveEvent()">Cancel event</button>
+      }
+      @if (actions().delete) {
+      <button class="quiet-button full-button danger-text" type="button" (click)="deleteActiveEvent()">Delete event</button>
       }
       }
     </div>
@@ -1083,7 +1100,7 @@
         [ngModel]="state().selectedEventId"
         (ngModelChange)="selectEvent($event)"
       >
-        @for (event of state().events; track event.id) {
+        @for (event of (state().role === 'student' ? state().events : workingEvents()); track event.id) {
         <option [value]="event.id">{{ event.name }}</option>
         }
       </select></label
@@ -1210,6 +1227,18 @@
         {{ activeEvent().name }} · Scan each student QR pass to record IN, then OUT.
       </p>
     </div>
+    @if (workingEvents().length > 1) {
+    <label class="select-label"
+      >Event<select [ngModel]="state().selectedEventId" (ngModelChange)="selectEvent($event)">
+        @for (event of workingEvents(); track event.id) {
+        <option [value]="event.id">{{ event.name }} · {{ formatDate(event.date) }}</option>
+        }
+      </select></label
+    >
+    }
+    @if (!canScanActiveEvent()) {
+    <p class="status-banner status-banner-pending" role="status">There is no approved event to scan yet. Scanning opens once an event is approved.</p>
+    }
     <div class="scanner-frame">
       <video #camera muted playsinline></video>
       <div class="scan-reticle"></div>
@@ -1261,7 +1290,7 @@
         [ngModel]="state().selectedEventId"
         (ngModelChange)="selectEvent($event)"
       >
-        @for (event of state().events; track event.id) {
+        @for (event of (state().role === 'student' ? state().events : workingEvents()); track event.id) {
         <option [value]="event.id">{{ event.name }}</option>
         }
       </select></label
@@ -1375,7 +1404,7 @@
         [ngModel]="state().selectedEventId"
         (ngModelChange)="selectEvent($event)"
       >
-        @for (event of state().events; track event.id) {
+        @for (event of (state().role === 'student' ? state().events : workingEvents()); track event.id) {
         <option [value]="event.id">{{ event.name }}</option>
         }
       </select></label

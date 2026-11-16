@@ -1,4 +1,5 @@
 import { computed, signal } from '@angular/core';
+import { eventActions } from '../../core/services/event-actions';
 import { EventFilter } from '../../core/services/event-calendar.service';
 import { AnnouncementAudience, SchoolEvent } from '../../core/models/school-event.models';
 import { AttendancePart } from './attendance.part';
@@ -108,6 +109,29 @@ export abstract class EventsPart extends AttendancePart {
     );
   }
 
+  async deleteActiveEvent(): Promise<void> {
+    const event = this.activeEvent();
+    if (!event || !this.actions().delete) return;
+    const confirmed = await this.confirm(
+      'Delete this event?',
+      `"${event.name}" will be removed for good. This cannot be undone.`,
+      'Delete event',
+    );
+    if (!confirmed) return;
+    try {
+      await this.workspaceApi.deleteEvent(this.auth.getToken(), event.id);
+      this.store.update((state) => {
+        state.events = state.events.filter((item) => item.id !== event.id);
+        state.attendance = state.attendance.filter((record) => record.eventId !== event.id);
+        state.selectedEventId = state.events[0]?.id ?? '';
+      });
+      this.go('events');
+      this.showToast('Event deleted.', 'warning');
+    } catch (error) {
+      this.showToast(this.workspaceApi.errorMessage(error), 'danger');
+    }
+  }
+
   async reinstateActiveEvent(): Promise<void> {
     const event = this.activeEvent();
     if (!event?.cancelled || this.auth.role() !== 'super_admin') return;
@@ -208,13 +232,7 @@ export abstract class EventsPart extends AttendancePart {
   /** The admin can edit any event; an organizer only their own unapproved ones. */
   canEditEvent(event: SchoolEvent | undefined): boolean {
     if (!event) return false;
-    if (this.auth.role() === 'super_admin') return true;
-    return (
-      this.auth.role() === 'organizer' &&
-      !!this.auth.userId() &&
-      event.createdBy === this.auth.userId() &&
-      (event.approvalStatus ?? 'approved') !== 'approved'
-    );
+    return eventActions(event, this.auth.role(), this.auth.userId(), false).edit;
   }
   async rejectEvent(eventId: string): Promise<void> {
     const event = this.state().events.find((item) => item.id === eventId);

@@ -71,6 +71,11 @@ export class EventService {
       event.resubmittedAt = new Date().toISOString();
       delete event.rejectionReason;
     }
+    if (existing && state.role === 'super_admin' && existing.approvalStatus === 'rejected') {
+      // Changing a rejected event sends it back for approval.
+      event.approvalStatus = 'pending';
+      delete event.rejectionReason;
+    }
     this.store.update((current) => {
       if (existing)
         current.events = current.events.map((item) =>
