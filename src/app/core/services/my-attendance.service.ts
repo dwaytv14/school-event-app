@@ -4,7 +4,9 @@ import {
   SchoolEvent,
   Student,
 } from '../models/school-event.models';
-import { AttendanceService } from './attendance.service';
+import { AttendanceService, attendanceStatus } from './attendance.service';
+import { isEventOver, isEventUpcoming } from './event-actions';
+import { addDaysToKey, schoolDateKey } from './time-format';
 import { isStudentRequired } from './event-roster';
 
 export type AttendanceRowStatus =
@@ -33,8 +35,27 @@ export interface AttendanceSummary {
   present: number;
   late: number;
   absent: number;
+  excused: number;
   /** null until there is at least one finished required event. */
   percentage: number | null;
+}
+
+/**
+ * A student can send an excuse letter from the day before the event, during it
+ * (not yet checked in), or after missing it (absent). Never for an event they
+ * already attended, one that is cancelled, or one that is not theirs.
+ */
+export function canExcuseRow(row: AttendanceRow, now: Date = new Date()): boolean {
+  if (row.record) return false;
+  if (row.status === 'Absent' || row.status === 'Ongoing') return true;
+  if (row.status !== 'Upcoming') return false;
+  // Early letters open the day before the event, not months ahead.
+  return schoolDateKey(now) >= addDaysToKey(row.event.date, -1);
+}
+
+/** The first day an excuse letter can be sent for an event (the day before it). */
+export function excuseOpensOn(event: SchoolEvent): string {
+  return addDaysToKey(event.date, -1);
 }
 
 /** Turns a student's events and records into a readable attendance history. */
@@ -48,9 +69,15 @@ export class MyAttendanceService {
     student: Pick<Student, 'id' | 'sectionId'> | undefined,
     now: Date = new Date(),
   ): AttendanceSummary {
+    const eventsById = new Map(events.map((event) => [event.id, event]));
     const own = new Map(
       records
         .filter((record) => record.studentId === student?.id)
+        // Nobody can have attended an event that has not started; only an excuse counts early.
+        .filter((record) => {
+          const event = eventsById.get(record.eventId);
+          return record.excused || !event || !isEventUpcoming(event, now);
+        })
         .map((record) => [record.eventId, record]),
     );
     const rows = events
@@ -61,6 +88,8 @@ export class MyAttendanceService {
       })
       // Optional events only matter if the student actually went.
       .filter((row) => row.required || row.record)
+      // A cancelled event that is already over is not worth listing.
+      .filter((row) => !(row.event.cancelled && !row.record && isEventOver(row.event, now)))
       .sort((left, right) =>
         `${right.event.date}${right.event.startTime}`.localeCompare(
           `${left.event.date}${left.event.startTime}`,
@@ -70,10 +99,9 @@ export class MyAttendanceService {
       rows.filter((row) => row.required && row.status === status).length;
     const present = count('Present');
     const late = count('Late');
-    const incomplete = count('Incomplete');
     const absent = count('Absent');
-    const counted = present + late + incomplete + absent;
-    const attended = present + late + incomplete;
+    const counted = present + late + absent;
+    const attended = present + late;
     return {
       rows,
       counted,
@@ -81,6 +109,7 @@ export class MyAttendanceService {
       present,
       late,
       absent,
+      excused: rows.filter((row) => row.status === 'Excused').length,
       percentage: counted === 0 ? null : Math.round((attended / counted) * 100),
     };
   }
@@ -91,17 +120,16 @@ export class MyAttendanceService {
     required: boolean,
     now: Date,
   ): AttendanceRowStatus {
-    const start = new Date(`${event.date}T${event.startTime}:00`).getTime();
-    const end = new Date(`${event.date}T${event.endTime}:00`).getTime();
-    const finished = Number.isFinite(end) && now.getTime() >= end;
+    // An event is over once the admin finishes it or its day has passed, not at its end time.
+    const finished = isEventOver(event, now);
     if (event.cancelled && !record) return 'Cancelled';
     if (record) {
       if (record.excused) return 'Excused';
       if (!record.timeOut && !finished) return 'Ongoing';
-      return this.attendance.statusFor(record, event) as AttendanceRowStatus;
+      return attendanceStatus(record, event, now) as AttendanceRowStatus;
     }
     if (!required) return 'Not required';
-    if (Number.isFinite(start) && now.getTime() < start) return 'Upcoming';
+    if (isEventUpcoming(event, now)) return 'Upcoming';
     return finished ? 'Absent' : 'Ongoing';
   }
 }

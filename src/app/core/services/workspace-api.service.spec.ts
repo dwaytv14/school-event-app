@@ -24,7 +24,10 @@ describe('WorkspaceApiService', () => {
     const service = TestBed.inject(WorkspaceApiService);
     const result = service.register('student.user', 'password123', {
       studentNumber: 'PPY-12345',
-      name: 'Student User',
+      name: 'Student Middle User',
+      firstName: 'Student',
+      middleName: 'Middle',
+      lastName: 'User',
       course: 'BSIT',
       yearLevel: '1st Year',
       section: 'A',

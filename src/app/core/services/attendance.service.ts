@@ -6,6 +6,77 @@ import {
 } from '../models/school-event.models';
 import { DemoStoreService } from './demo-store.service';
 import { isStudentRequired } from './event-roster';
+import { eventMoment, schoolDateKey } from './time-format';
+
+/** How long after checking in a student can be checked out (stops IN then OUT from one long scan). */
+export const MIN_STAY_MS = 2 * 60 * 1000;
+
+/**
+ * The moment everyone still inside an event is checked out by itself:
+ *  - when the admin finishes the event, that moment;
+ *  - otherwise 11:59 PM of the event's day (Philippine time), once that day has passed.
+ * Returns null while the event is still on.
+ */
+export function eventClosedAt(event: SchoolEvent, now: Date = new Date()): string | null {
+  if (event.finishedAt) return event.finishedAt;
+  if (event.date && event.date < schoolDateKey(now)) {
+    return new Date(`${event.date}T23:59:00+08:00`).toISOString();
+  }
+  return null;
+}
+
+/** Present, Late or Excused for one record (pure, no store needed). */
+export function attendanceStatus(
+  record: AttendanceRecord | undefined,
+  event: SchoolEvent,
+  now: Date = new Date(),
+): AttendanceStatus {
+  if (!record) return 'Absent';
+  if (record.excused) return 'Excused';
+  // A student still inside is checked out by itself when the event is over, so they count as out.
+  if (!record.timeOut && !eventClosedAt(event, now)) return 'Incomplete';
+  const timeIn = new Date(record.timeIn);
+  const eventStart = eventMoment(event.date, event.startTime);
+  return timeIn.getTime() > eventStart.getTime() + event.graceMinutes * 60000
+    ? 'Late'
+    : 'Present';
+}
+
+/**
+ * Once an event is over nobody can still be inside. Any record of that event with no
+ * time-out is closed at the moment it ended (see eventClosedAt). Returns the same array
+ * when nothing needed closing.
+ */
+export function closeRecordsOfFinishedEvents(
+  events: SchoolEvent[],
+  attendance: AttendanceRecord[],
+  now: Date = new Date(),
+): AttendanceRecord[] {
+  const closeAt = new Map<string, { event: SchoolEvent; at: string }>();
+  for (const event of events) {
+    const at = eventClosedAt(event, now);
+    if (at) closeAt.set(event.id, { event, at });
+  }
+  if (!closeAt.size) return attendance;
+  let changed = false;
+  const result = attendance.map((record) => {
+    const closing = closeAt.get(record.eventId);
+    if (!closing || record.excused || !record.timeIn || record.timeOut) return record;
+    const timeOut = Date.parse(closing.at) < Date.parse(record.timeIn) ? record.timeIn : closing.at;
+    const closed: AttendanceRecord = {
+      ...record,
+      timeOut,
+      durationMinutes: Math.max(
+        0,
+        Math.round((Date.parse(timeOut) - Date.parse(record.timeIn)) / 60000),
+      ),
+    };
+    closed.status = attendanceStatus(closed, closing.event, now);
+    changed = true;
+    return closed;
+  });
+  return changed ? result : attendance;
+}
 
 export interface ScanResult {
   accepted: boolean;
@@ -22,6 +93,7 @@ export class AttendanceService {
     eventId: string,
     studentId: string,
     online: boolean,
+    now: Date = new Date(),
   ): ScanResult {
     const state = this.store.state();
     const event = state.events.find((item) => item.id === eventId);
@@ -33,6 +105,10 @@ export class AttendanceService {
         message: 'Student or event not found.',
       };
     if (event.cancelled) return this.reject('This event was cancelled.');
+    if (event.finishedAt) return this.reject('This event has already finished.');
+    if (!isStudentRequired(event, student)) {
+      return this.reject('Not registered for this event.');
+    }
 
     const prior = state.attendance.find(
       (record) => record.eventId === eventId && record.studentId === studentId,
@@ -45,49 +121,21 @@ export class AttendanceService {
         record: prior,
       };
 
-    const seat = event.seats.find((item) => item.studentId === studentId);
-    if (event.seatingPlan) {
-      const sectionId = student.sectionId ?? '';
-      if (!isStudentRequired(event, student)) {
-        return this.reject('Not registered for this event.');
+    // A second scan right after the first one is the same visit, not the student leaving.
+    if (prior && !prior.excused && prior.timeIn && !prior.timeOut) {
+      const waitMs = MIN_STAY_MS - (now.getTime() - Date.parse(prior.timeIn));
+      if (waitMs > 0) {
+        return {
+          accepted: false,
+          tone: 'warning',
+          message: `Already checked IN. Check-out opens in ${Math.ceil(waitMs / 60000)} min.`,
+          record: prior,
+        };
       }
-      const sharedSeatCount =
-        event.seatingPlan.sharedSeatCount ??
-        Object.values(event.seatingPlan.sectionSeatCounts ?? {}).reduce(
-          (total, count) => total + count,
-          0,
-        );
-      // Every required section sits in the event's chairs. Only enforce the
-      // chair limit when chairs were actually set up.
-      if (!prior && sharedSeatCount > 0) {
-        const occupied = state.attendance.filter((record) => {
-          if (
-            record.eventId !== eventId ||
-            record.studentId === studentId ||
-            !record.timeIn ||
-            record.timeOut
-          ) {
-            return false;
-          }
-          const attendee = state.students.find(
-            (item) => item.id === record.studentId,
-          );
-          return !!attendee && isStudentRequired(event, attendee);
-        }).length;
-        if (occupied >= sharedSeatCount) {
-          return this.reject(
-            `All ${sharedSeatCount} chairs are currently occupied.`,
-          );
-        }
-      }
-    } else {
-      if (!seat)
-        return this.reject('Not registered for this event.');
     }
 
-    const now = new Date();
     const timestamp = now.toISOString();
-    const eventStart = new Date(`${event.date}T${event.startTime}:00`);
+    const eventStart = eventMoment(event.date, event.startTime);
     const late =
       now.getTime() > eventStart.getTime() + event.graceMinutes * 60000;
     let record: AttendanceRecord;
@@ -191,6 +239,7 @@ export class AttendanceService {
         (item) => item.eventId === eventId && item.studentId === studentId,
       );
       if (action === 'clear') {
+        // The sync notices the record is gone and tells the server.
         if (index >= 0) current.attendance.splice(index, 1);
         return;
       }
@@ -239,18 +288,39 @@ export class AttendanceService {
     return { accepted: true, tone: 'success', message, record };
   }
 
+  /**
+   * Ends the event right now: everyone still checked in (no time-out) is checked
+   * out at this moment, since the event is over. Returns how many were closed.
+   */
+  finishEvent(eventId: string, online: boolean, now: Date = new Date()): number {
+    let closed = 0;
+    const stamp = now.toISOString();
+    this.store.update((current) => {
+      const event = current.events.find((item) => item.id === eventId);
+      if (!event || event.finishedAt) return;
+      event.finishedAt = stamp;
+      for (const record of current.attendance) {
+        if (record.eventId !== eventId || record.excused || !record.timeIn || record.timeOut) {
+          continue;
+        }
+        record.timeOut = stamp;
+        record.durationMinutes = Math.max(
+          0,
+          Math.round((now.getTime() - new Date(record.timeIn).getTime()) / 60000),
+        );
+        record.status = this.statusFor(record, event);
+        record.syncStatus = online ? 'Synced' : 'Pending sync';
+        closed += 1;
+      }
+    });
+    return closed;
+  }
+
   statusFor(
     record: AttendanceRecord | undefined,
     event: SchoolEvent,
   ): AttendanceStatus {
-    if (!record) return 'Absent';
-    if (record.excused) return 'Excused';
-    if (!record.timeOut) return 'Incomplete';
-    const timeIn = new Date(record.timeIn);
-    const eventStart = new Date(`${event.date}T${event.startTime}:00`);
-    return timeIn.getTime() > eventStart.getTime() + event.graceMinutes * 60000
-      ? 'Late'
-      : 'Present';
+    return attendanceStatus(record, event);
   }
 
   private reject(reason: string): ScanResult {

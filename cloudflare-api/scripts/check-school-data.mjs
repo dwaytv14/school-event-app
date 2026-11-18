@@ -38,8 +38,7 @@ try {
   ok('cancelled events have a reason and no attendance', events.filter((e) => e.cancelled).every((e) => e.cancelReason && !attendance.some((a) => a.eventId === e.id)));
   ok('the resubmitted event is approved with no leftover reason', (() => { const e = events.find((x) => x.id === 'EVT-20261217-outreach-feeding'); return e?.approvalStatus === 'approved' && !e.rejectionReason && !!e.resubmittedAt; })());
   ok('the moved event kept its original schedule', (() => { const e = events.find((x) => x.id === 'EVT-20261205-alumni-homecoming'); return e?.postponedFrom?.date === '2026-12-05' && e.date === '2026-12-12'; })());
-  ok('every event has chairs that add up', events.filter((e) => e.seatingPlan?.blocks).every((e) => e.seats.length === e.seatingPlan.sharedSeatCount && e.seatingPlan.blocks.reduce((n, b) => n + b.rows * b.seatsPerRow, 0) === e.seats.length));
-  
+
   // ---- attendance
   const eventsById = new Map(events.map((e) => [e.id, e]));
   const studentsById = new Map(students.map((s) => [s.id, s]));

@@ -15,6 +15,13 @@ describe('isStudentRequired', () => {
     expect(isStudentRequired(event, { id: 'S3' })).toBe(false);
   });
 
+  it('matches legacy events by their saved section labels', () => {
+    const event = { ...base, sections: ['BSIT 1st Year A'] };
+
+    expect(isStudentRequired(event, { id: 'S1', section: 'BSIT 1st Year A' })).toBe(true);
+    expect(isStudentRequired(event, { id: 'S2', section: 'BSIT 1st Year B' })).toBe(false);
+  });
+
   it('uses the saved roster once students moved up, whatever section they are in now', () => {
     const event = {
       ...base,

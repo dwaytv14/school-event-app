@@ -7,10 +7,14 @@ import { SchoolEvent } from '../models/school-event.models';
  */
 export function isStudentRequired(
   event: SchoolEvent,
-  student: { id: string; sectionId?: string },
+  student: { id: string; sectionId?: string; section?: string },
 ): boolean {
   if (event.roster) {
     return Object.values(event.roster).some((ids) => ids.includes(student.id));
   }
-  return !!student.sectionId && (event.requiredSections ?? []).includes(student.sectionId);
+  const requiredSections = event.requiredSections ?? [];
+  return (
+    (!!student.sectionId && requiredSections.includes(student.sectionId)) ||
+    event.sections.includes(student.section ?? '')
+  );
 }

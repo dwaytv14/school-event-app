@@ -1,6 +1,6 @@
 # Gather | School Event Attendance
 
-A mobile-first Angular app for school event check-in, seat assignments, attendance reporting, and SMS-style notifications. It runs in a desktop browser and is sized for a 390 × 844 mobile emulator. The app uses standalone Angular components, Angular Router, signals, and a blank workspace on first launch.
+A responsive Angular app for school event check-in, section-based expected attendee counts, attendance reporting, and SMS-style notifications. It runs on desktop, tablet, and mobile. The app uses standalone Angular components, Angular Router, signals, and a blank workspace on first launch.
 
 ## Install and run
 
@@ -24,8 +24,8 @@ The production build emits an Angular service worker, `manifest.webmanifest`, an
 
 ## Workspace data and structure
 
-- `src/app/core/models/school-event.models.ts`: Student, SchoolEvent, Seat, AttendanceRecord, SmsMessage, SyncItem, and related types.
-- `src/app/core/services/`: browser-local store, event, attendance, seating, SMS, and sync services.
+- `src/app/core/models/school-event.models.ts`: Student, SchoolEvent, AttendanceRecord, SmsMessage, SyncItem, and related types.
+- `src/app/core/services/`: browser-local store, event, attendance, SMS, and sync services.
 - `src/app/home/`: route-driven organizer/student screens and mobile layout.
 - `src/app/app.routes.ts`: lazy-loaded login and workspace routes.
 - `src/manifest.webmanifest` and `ngsw-config.json`: PWA metadata and offline asset policy.
@@ -56,9 +56,9 @@ npm --prefix cloudflare-api run db:seed:super-admin
 Remove-Item Env:SUPER_ADMIN_PASSWORD
 ```
 
-Student signup is public and immediate: it creates a linked student profile and account on the server, and requires internet. Students enter their PPY student ID, full name, Philippine contact number, course, year, and section (A or B). The app creates a missing course/year/section entry automatically. Super admins can create organizer accounts and approve organizer-created events. Students receive only approved events, announcements, and their own QR pass. Organizer accounts are limited to scanning attendance at approved events and creating events, which remain pending until approved.
+Student signup is public and immediate: it creates a linked student profile and account on the server, and requires internet. Students enter their PPY student ID, full name, Philippine contact number, course, year, and a section configured by the super admin. To add a section, open **Settings → Courses & sections**, choose its course and year, enter any section name (for example, C), and select **Add section**. New sections then appear in student signup, event requirements, and announcement audiences. School-year promotion carries configured section names forward; add new first-year section groups there before registration opens.
 
-The super admin can reset the shared app under Settings → Advanced. This deletes all non-admin accounts and shared workspace records, including students, events, attendance, and announcements, while keeping the signed-in admin account and recreating the supported A/B section choices. The operation affects all devices and cannot be undone.
+The super admin can reset the shared app under Settings → Advanced. This deletes all non-admin accounts and shared workspace records, including students, events, attendance, and announcements, while keeping the signed-in admin account and recreating the default A/B section choices. Any custom sections must be added again in Settings → Courses & sections. The operation affects all devices and cannot be undone.
 
 Workspace data is cached on each device (SQLite on Android/iOS; local storage in browser previews) and syncs to D1 when connectivity is available. After a successful first online sign-in, users can continue with the last saved workspace offline; changes sync after reconnecting. The installed APK connects directly to the hosted Worker and does not depend on `npm start` or a server running on the developer's computer.
 
@@ -88,9 +88,9 @@ The app creates no sample sections, students, events, or announcements. Students
 ## Organizer workflow
 
 1. **School setup:** sign in as `PPY-ADMIN`, configure sections in Settings, and create organizer accounts.
-2. **Student registration:** students sign up online with their PPY-number student ID, name, course, year, section A/B, contact number, username, and password. Their unique QR pass contains their student ID and resolves to their saved profile.
+2. **Student registration:** students sign up online with their PPY-number student ID, name, course, year, an admin-configured section, contact number, username, and password. Their unique QR pass contains their student ID and resolves to their saved profile.
 3. **Event setup and approval:** organizers or the super admin create events and select required section groups. Organizer-created events remain pending until approved by the super admin.
-4. **QR attendance:** organizers scan student passes for approved events; the app identifies the student and shows their course, year, section, and assigned seat. The first scan records IN, the second records OUT, and later scans report that the student is already OUT.
+4. **Expected attendees and QR attendance:** event details show the current number of students in the selected sections. Organizers scan student passes for approved events; the app identifies the student and shows their course, year, and section. The first scan records IN, the second records OUT, and later scans report that the student is already OUT.
 5. **Announcements and offline access:** the super admin publishes announcements for the school. Previously signed-in users can view their cached workspace offline; pending local changes sync after reconnecting.
 
 ## Prototype limitations

@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { SQLiteDBConnection } from '@capacitor-community/sqlite';
 import { AppState } from '../models/school-event.models';
+import { AttendanceSyncInfo } from './attendance-sync';
 import { WorkspaceSnapshot } from './workspace-api.service';
 import { SqliteConnectionService } from './sqlite-connection.service';
 
@@ -12,6 +13,8 @@ export interface CachedWorkspace {
   snapshot: WorkspaceSnapshot;
   dirty: boolean;
   resetPending: boolean;
+  /** Where this device is in the attendance sync (cursor + fingerprints). */
+  attendanceSync?: AttendanceSyncInfo;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -37,6 +40,7 @@ export class DeviceStateService {
           snapshot: saved.snapshot,
           dirty: Number(row.dirty) === 1,
           resetPending: saved.resetPending,
+          attendanceSync: saved.attendanceSync,
         };
       }
       return {
@@ -62,10 +66,11 @@ export class DeviceStateService {
     revision: number,
     dirty: boolean,
     resetPending = false,
+    attendanceSync?: AttendanceSyncInfo,
   ): Promise<void> {
     const key = this.accountKey(username);
     const snapshot = this.createSnapshot(state, revision);
-    const serialized = JSON.stringify({ snapshot, dirty, resetPending });
+    const serialized = JSON.stringify({ snapshot, dirty, resetPending, attendanceSync });
     if (Capacitor.isNativePlatform()) {
       const database = await this.open();
       await database.run(
@@ -90,7 +95,8 @@ export class DeviceStateService {
         attendance: state.attendance,
         violations: state.violations,
         messages: state.messages,
-        syncItems: state.syncItems,
+        // Only changes still waiting to be sent matter; finished ones just take up room.
+        syncItems: state.syncItems.filter((item) => item.status === 'Pending sync'),
         announcements: state.announcements ?? [],
       },
     };
@@ -145,7 +151,11 @@ export class DeviceStateService {
 
   private isStoredWorkspace(
     value: unknown,
-  ): value is { snapshot: WorkspaceSnapshot; resetPending: boolean } {
+  ): value is {
+    snapshot: WorkspaceSnapshot;
+    resetPending: boolean;
+    attendanceSync?: AttendanceSyncInfo;
+  } {
     return (
       typeof value === 'object' &&
       value !== null &&

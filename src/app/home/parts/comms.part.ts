@@ -1,3 +1,4 @@
+import { clock12 } from '../../core/services/time-format';
 import { computed } from '@angular/core';
 import { isStudentRequired } from '../../core/services/event-roster';
 import {
@@ -42,7 +43,7 @@ export abstract class CommsPart extends CatalogPart {
     });
   }
 
-  /** Posts an update and texts the students it is for (used by Updates, cancel and postpone). */
+  /** Posts an update and texts the students it is for (used by Updates and cancel). */
   protected async publishAnnouncement(
     title: string,
     body: string,
@@ -172,7 +173,7 @@ export abstract class CommsPart extends CatalogPart {
     this.messageTemplate = template;
     const event = this.activeEvent();
     const messages: Record<string, string> = {
-      'Event reminder': `Reminder: ${event?.name} is on ${event ? this.formatDate(event.date) : ''} at ${event?.startTime}. See you there!`,
+      'Event reminder': `Reminder: ${event?.name} is on ${event ? this.formatDate(event.date) : ''} at ${clock12(event?.startTime)}. See you there!`,
       'Schedule change': `Schedule update for ${event?.name}: check event details for the latest time and venue.`,
       Cancellation: `${event?.name} has been cancelled. Please contact your organizer for more information.`,
       'Attendance confirmation': `Your attendance for ${event?.name} has been recorded.`,

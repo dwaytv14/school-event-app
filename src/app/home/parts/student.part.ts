@@ -1,4 +1,5 @@
 import { computed, signal } from '@angular/core';
+import { canExcuseRow, excuseOpensOn } from '../../core/services/my-attendance.service';
 import { ExcuseRequest } from '../../core/services/workspace-api.service';
 import { EventsPart } from './events.part';
 
@@ -12,6 +13,31 @@ export abstract class StudentPart extends EventsPart {
       this.activeStudent(),
     ),
   );
+  /**
+   * What a student can do about an excuse letter for the open event:
+   * send one, wait for the answer, or nothing at all (for example they already attended).
+   */
+  readonly eventExcuse = computed(() => {
+    this.schoolDay(); // opens by itself when the day before the event arrives
+    const event = this.activeEvent();
+    if (this.auth.role() !== 'student' || !event) return null;
+    const [row] = this.myAttendance.summarize([event], this.state().attendance, this.activeStudent()).rows;
+    if (!row) return null; // not this student's event
+    const request = this.myExcuses().find(
+      (item) => item.eventId === event.id && item.status !== 'approved',
+    );
+    const excused = row.status === 'Excused';
+    const canSend = !excused && request?.status !== 'pending' && canExcuseRow(row);
+    const tooEarly = !excused && !canSend && row.status === 'Upcoming' && request?.status !== 'pending';
+    return {
+      excused,
+      request,
+      canSend,
+      /** Set while it is too early; the day letters open. */
+      opensOn: tooEarly ? excuseOpensOn(event) : null,
+    };
+  });
+
   attendanceStatusColor(status: string): string {
     return status === 'Ongoing' || status === 'Upcoming'
       ? 'primary'

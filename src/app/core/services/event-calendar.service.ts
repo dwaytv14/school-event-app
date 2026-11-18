@@ -1,7 +1,8 @@
 import { Injectable } from '@angular/core';
 import { SchoolEvent } from '../models/school-event.models';
+import { schoolDateKey } from './time-format';
 
-export type EventFilter = 'upcoming' | 'past' | 'all';
+export type EventFilter = 'ongoing' | 'upcoming' | 'past' | 'all';
 
 export interface CalendarCell {
   date: string;
@@ -13,9 +14,19 @@ export interface CalendarCell {
 /** Filtering and month-grid helpers for the Events page. */
 @Injectable({ providedIn: 'root' })
 export class EventCalendarService {
+  /**
+   * Where an event stands by its day, not its clock times: events often run
+   * over, so an event stays "ongoing" for the whole day it is held.
+   */
+  phase(event: SchoolEvent, now: Date = new Date()): 'ongoing' | 'upcoming' | 'past' {
+    const today = schoolDateKey(now);
+    if (event.finishedAt) return 'past';
+    if (event.date === today) return 'ongoing';
+    return event.date > today ? 'upcoming' : 'past';
+  }
+
   isPast(event: SchoolEvent, now: Date = new Date()): boolean {
-    const end = new Date(`${event.date}T${event.endTime || '23:59'}:00`).getTime();
-    return Number.isFinite(end) && end < now.getTime();
+    return this.phase(event, now) === 'past';
   }
 
   filter(
@@ -25,11 +36,11 @@ export class EventCalendarService {
   ): SchoolEvent[] {
     const key = (event: SchoolEvent) => `${event.date}${event.startTime}`;
     const shown = events.filter((event) =>
-      filter === 'all' ? true : this.isPast(event, now) === (filter === 'past'),
+      filter === 'all' ? true : this.phase(event, now) === filter,
     );
-    // Soonest first for what is coming; most recent first for what is over.
+    // Soonest first for what is coming or happening; most recent first for what is over.
     return [...shown].sort((left, right) =>
-      filter === 'upcoming'
+      filter === 'upcoming' || filter === 'ongoing'
         ? key(left).localeCompare(key(right))
         : key(right).localeCompare(key(left)),
     );

@@ -12,7 +12,7 @@ describe('student setup', () => {
     expect(store.state().events).toEqual([]);
   });
 
-  it('adds a student and creates seats for their section in existing events', () => {
+  it('adds a student without creating a seat assignment', () => {
     const store = new DemoStoreService();
     const event = {
       id: 'EVT-user-created',
@@ -23,8 +23,9 @@ describe('student setup', () => {
       venue: 'Main hall',
       description: '',
       graceMinutes: 10,
-      sections: [],
+      sections: ['Grade 10-A'],
       seats: [],
+      requiredSections: ['section-a'],
     };
     store.update((state) => state.events.push(event));
     TestBed.resetTestingModule();
@@ -34,20 +35,19 @@ describe('student setup', () => {
     const student = service.add({
       name: 'Alex Student',
       section: 'Grade 10-A',
+      sectionId: 'section-a',
       mobile: '+639123456789',
     });
 
     const savedEvent = store.state().events[0];
     expect(store.state().students).toEqual([student]);
-    expect(savedEvent.sections).toContain('Grade 10-A');
-    expect(savedEvent.seats).toHaveLength(12);
-    expect(savedEvent.seats[0].studentId).toBe(student.id);
+    expect(savedEvent.seats).toEqual([]);
   });
 
-  it('does not make individual seat assignments for section-based seating plans', () => {
+  it('does not assign a student to legacy seat records', () => {
     const store = new DemoStoreService();
     const event = {
-      id: 'EVT-section-seating',
+      id: 'EVT-section-event',
       name: 'Gym day',
       date: '2026-12-01',
       startTime: '09:00',
@@ -56,19 +56,16 @@ describe('student setup', () => {
       description: '',
       graceMinutes: 10,
       sections: [],
-      seats: [],
       requiredSections: ['section-a'],
-      seatingPlan: {
-        gymnasiumBenchGroups: [
-          {
-            id: 'left-1',
-            side: 'left' as const,
-            number: 1,
-            sectionId: 'section-a',
-          },
-        ],
-        sectionSeatCounts: { 'section-a': 0 },
-      },
+      seats: [
+        {
+          id: 'legacy-seat',
+          section: 'BSIT 1st Year A',
+          row: 1,
+          number: 1,
+          studentId: null,
+        },
+      ],
     };
     store.update((state) => state.events.push(event));
     TestBed.resetTestingModule();
@@ -85,6 +82,6 @@ describe('student setup', () => {
     });
 
     expect(store.state().events[0].sections).toContain(student.section);
-    expect(store.state().events[0].seats).toEqual([]);
+    expect(store.state().events[0].seats[0].studentId).toBeNull();
   });
 });

@@ -8,6 +8,11 @@ import {
   SchoolSection,
 } from '../../core/services/workspace-api.service';
 import { Student } from '../../core/models/school-event.models';
+import {
+  compareByLastName,
+  lastNameFirst,
+  studentClassInfo,
+} from '../../core/services/student-name';
 import { StudentPart } from './student.part';
 
 /** Accounts, student details, organizers, the school year, the activity log and excuse review. */
@@ -66,7 +71,15 @@ export abstract class AdminPart extends StudentPart {
   readonly resetBusy = signal(false);
 
   // ======================= Admin: students, accounts, organizers =======================
-  readonly detailStudentId = signal('');
+  // Kept in sessionStorage so reloading the student page does not lose which student is open.
+  readonly detailStudentId = signal(AdminPart.savedDetailStudent());
+  private static savedDetailStudent(): string {
+    try {
+      return sessionStorage.getItem('detailStudentId') ?? '';
+    } catch {
+      return '';
+    }
+  }
   readonly detailStudent = computed(() =>
     this.state().students.find((student) => student.id === this.detailStudentId()),
   );
@@ -82,8 +95,89 @@ export abstract class AdminPart extends StudentPart {
   );
   readonly accountBusy = signal(false);
 
+  // ---- Students roster table: last name first, filtered by course / year / section ----
+  readonly rosterCourse = signal('');
+  readonly rosterYear = signal('');
+  readonly rosterSection = signal('');
+  readonly rosterSearch = signal('');
+  readonly rosterRows = computed(() =>
+    [...this.state().students]
+      .sort(compareByLastName)
+      .map((student) => ({
+        student,
+        display: lastNameFirst(student),
+        info: studentClassInfo(student),
+      })),
+  );
+  readonly rosterCourses = computed(() =>
+    [...new Set(this.rosterRows().map((row) => row.info.course).filter(Boolean))].sort(),
+  );
+  readonly rosterYears = computed(() =>
+    [
+      ...new Set(
+        this.rosterRows()
+          .filter((row) => !this.rosterCourse() || row.info.course === this.rosterCourse())
+          .map((row) => row.info.year)
+          .filter(Boolean),
+      ),
+    ].sort(),
+  );
+  readonly rosterSections = computed(() =>
+    [
+      ...new Set(
+        this.rosterRows()
+          .filter(
+            (row) =>
+              (!this.rosterCourse() || row.info.course === this.rosterCourse()) &&
+              (!this.rosterYear() || row.info.year === this.rosterYear()),
+          )
+          .map((row) => row.info.section)
+          .filter(Boolean),
+      ),
+    ].sort(),
+  );
+  readonly visibleRosterRows = computed(() => {
+    const query = this.rosterSearch().trim().toLowerCase();
+    return this.rosterRows().filter(
+      (row) =>
+        (!this.rosterCourse() || row.info.course === this.rosterCourse()) &&
+        (!this.rosterYear() || row.info.year === this.rosterYear()) &&
+        (!this.rosterSection() || row.info.section === this.rosterSection()) &&
+        (!query ||
+          `${row.display} ${row.student.name} ${row.student.id}`.toLowerCase().includes(query)),
+    );
+  });
+  setRosterCourse(value: string): void {
+    this.rosterCourse.set(value);
+    this.rosterYear.set('');
+    this.rosterSection.set('');
+  }
+  setRosterYear(value: string): void {
+    this.rosterYear.set(value);
+    this.rosterSection.set('');
+  }
+  clearRosterFilters(): void {
+    this.rosterCourse.set('');
+    this.rosterYear.set('');
+    this.rosterSection.set('');
+    this.rosterSearch.set('');
+  }
+
+  /** Opens the reset-password page with nothing selected yet. */
+  openPasswordReset(): void {
+    this.resetAccountUsername = '';
+    this.resetAccountPassword = '';
+    this.accountRoleFilter.set('all');
+    this.go('settings-account-reset');
+  }
+
   openStudent(studentId: string): void {
     this.detailStudentId.set(studentId);
+    try {
+      sessionStorage.setItem('detailStudentId', studentId);
+    } catch {
+      // Works without storage; a reload just returns to the list.
+    }
     this.go('student-detail');
   }
 
@@ -299,6 +393,20 @@ export abstract class AdminPart extends StudentPart {
       );
       if (!reason) return;
       note = reason;
+      const confirmed = await this.confirm(
+        'Send this rejection?',
+        `${excuse.studentName} will be told: "${reason}". They can send another letter.`,
+        'Reject excuse',
+      );
+      if (!confirmed) return;
+    } else {
+      const confirmed = await this.confirm(
+        'Approve this excuse?',
+        `${excuse.studentName} will be marked excused for "${excuse.eventName}". It will not count against their attendance.`,
+        'Approve',
+        false,
+      );
+      if (!confirmed) return;
     }
     this.excuseBusy.set(true);
     try {
@@ -451,12 +559,44 @@ export abstract class AdminPart extends StudentPart {
       this.accountError.set(this.workspaceApi.errorMessage(error));
     }
   }
-  async resetManagedAccountPassword(): Promise<void> {
+  /** The account whose password is being reset in the pop-up (null when it is closed). */
+  readonly resetModal = signal<string | null>(null);
+  resetConfirm = '';
+  openResetModal(username: string): void {
+    this.resetAccountUsername = username;
+    this.resetAccountPassword = '';
+    this.resetConfirm = '';
+    this.accountError.set(null);
+    this.accountMessage.set(null);
+    this.resetModal.set(username);
+  }
+  closeResetModal(): void {
+    this.resetModal.set(null);
+    this.resetAccountPassword = '';
+    this.resetConfirm = '';
+    this.accountError.set(null);
+  }
+  /** The pop-up form: the admin sets a new password; the account's current one is not needed. */
+  async submitResetModal(): Promise<void> {
+    this.accountError.set(null);
+    const password = this.resetAccountPassword;
+    if (password.length < 8 || password.length > 128) {
+      this.accountError.set('The new password must be 8–128 characters.');
+      return;
+    }
+    if (password !== this.resetConfirm) {
+      this.accountError.set('The new password and its confirmation do not match.');
+      return;
+    }
+    if (await this.resetManagedAccountPassword()) this.closeResetModal();
+  }
+
+  async resetManagedAccountPassword(): Promise<boolean> {
     this.accountError.set(null);
     this.accountMessage.set(null);
     if (!this.resetAccountUsername) {
       this.accountError.set('Select an account before resetting its password.');
-      return;
+      return false;
     }
     try {
       await this.workspaceApi.resetAccountPassword(
@@ -484,8 +624,10 @@ export abstract class AdminPart extends StudentPart {
         this.authUsername = this.resetAccountUsername;
         void this.router.navigate(['/login']);
       }
+      return true;
     } catch (error) {
       this.accountError.set(this.workspaceApi.errorMessage(error));
+      return false;
     }
   }
   async resetWorkspace(): Promise<void> {

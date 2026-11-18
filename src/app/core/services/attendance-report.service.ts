@@ -1,3 +1,7 @@
+import { isEventOver } from './event-actions';
+import type { RowInput } from 'jspdf-autotable';
+import { collegeForCourse, compactClass, courseOfSection } from './student-name';
+import { timeOfDay } from './time-format';
 import { inject, Injectable } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import {
@@ -28,6 +32,31 @@ export interface ReportSection {
   excused: number;
 }
 
+/** The attendee sheet follows the school's template: 8.5 x 13 in paper, in points. */
+const SHEET = {
+  width: 612,
+  height: 936,
+  headerHeight: 103,
+  /** Where the template prints the college name: centred, white, Times bold 12 pt. */
+  collegeBaseline: 89.3,
+  collegeSize: 12,
+  footerTop: 838,
+  tableTop: 124.5,
+  tableLeft: 87.4,
+  tableRight: 554.9,
+  /** The Signature column always keeps at least this much room to sign. */
+  signatureMin: 95,
+  /** The Name column is never narrower than this, even when every name is short. */
+  nameMin: 195,
+};
+
+export interface AttendeeSheetRow {
+  name: string;
+  yearSection: string;
+  date: string;
+  signature: '';
+}
+
 /** Builds the per-section attendance sheets and turns them into a printable PDF. */
 @Injectable({ providedIn: 'root' })
 export class AttendanceReportService {
@@ -41,8 +70,7 @@ export class AttendanceReportService {
     labelFor: (sectionId: string) => string,
     now: Date = new Date(),
   ): ReportSection[] {
-    const end = new Date(`${event.date}T${event.endTime}:00`).getTime();
-    const ended = Number.isFinite(end) && now.getTime() >= end;
+    const ended = isEventOver(event, now);
     const byStudent = new Map(
       records
         .filter((record) => record.eventId === event.id)
@@ -92,126 +120,250 @@ export class AttendanceReportService {
       .sort((left, right) => left.label.localeCompare(right.label));
   }
 
-  /** Creates the PDF: one page (or more, if the list is long) per section. */
+  buildAttendeeSheetRows(
+    event: SchoolEvent,
+    students: Student[],
+    sectionLabelFor: (student: Student) => string,
+  ): AttendeeSheetRow[] {
+    const [year, month, day] = event.date.split('-');
+    const date = `${month}/${day}/${year}`;
+    return students.map((student) => ({
+      name: student.name,
+      yearSection: sectionLabelFor(student),
+      date,
+      signature: '',
+    }));
+  }
+
+  /**
+   * The printable attendee sheet, laid out like the school's template: the college header
+   * and footer on every page, and a plain Name / Year & Section / Date / Signature table.
+   * The paper is 8.5 x 13 in (612 x 936 pt), the same as the template.
+   */
+  async createAttendeePdf(
+    event: SchoolEvent,
+    rows: AttendeeSheetRow[],
+    sectionLabel: string,
+  ): Promise<{ filename: string; base64: string; blob: Blob }> {
+    const sheet = await this.startTemplateSheet();
+    // Courses of different colleges do not share a sheet: each college gets its own page(s).
+    const byCollege = new Map<string, AttendeeSheetRow[]>();
+    for (const row of rows) {
+      const college = collegeForCourse(courseOfSection(row.yearSection));
+      byCollege.set(college, [...(byCollege.get(college) ?? []), row]);
+    }
+    if (byCollege.size === 0) byCollege.set(collegeForCourse(''), []);
+    let first = true;
+    for (const [college, group] of byCollege) {
+      if (!first) sheet.newPage();
+      first = false;
+      sheet.table(
+        ['Name', 'Year & Section', 'Date', 'Signature'],
+        group.map((row, index) => [`${index + 1}. ${row.name}`, row.yearSection, row.date, row.signature]),
+        [1, 1, 1, 1.5],
+        { college, title: this.eventTitle(event) },
+      );
+    }
+    return {
+      filename: `${this.slug(event.name)}-${this.slug(sectionLabel)}-attendees.pdf`,
+      ...sheet.finish(),
+    };
+  }
+
+  /**
+   * The attendance report, in the same template as the attendee sheet: one page (or more,
+   * for a long list) per section, with Name, Year & Section (written like BSIT-4A), Date and a
+   * blank Signature column. Only the students who attended (present or late) are listed;
+   * absent and excused students are not, and a section with nobody present has no page.
+   */
   async createPdf(
     event: SchoolEvent,
     sections: ReportSection[],
-    generatedAt: Date = new Date(),
+    // Kept so callers need not change; the template has no "generated at" line.
+    _generatedAt: Date = new Date(),
   ): Promise<{ filename: string; base64: string; blob: Blob }> {
-    // Loaded only when a report is requested, so the app starts fast.
-    const [{ jsPDF }, { autoTable }] = await Promise.all([
+    const sheet = await this.startTemplateSheet();
+    const [year, month, day] = event.date.split('-');
+    const date = `${month}/${day}/${year}`;
+    const head = ['Name', 'Year & Section', 'Date', 'Signature'];
+    const widths = [1, 1, 1, 1.5];
+
+    const withAttendees = sections
+      .map((section) => ({
+        section,
+        attended: section.rows.filter((row) => row.status === 'Present' || row.status === 'Late'),
+      }))
+      .filter((item) => item.attended.length > 0);
+
+    withAttendees.forEach(({ section, attended }, index) => {
+      if (index > 0) sheet.newPage();
+      const yearSection = compactClass({ section: section.label });
+      const frame = { college: collegeForCourse(courseOfSection(section.label)), title: this.eventTitle(event) };
+      sheet.table(
+        head,
+        // The numbers count the people listed, not everyone in the section.
+        attended.map((row, position) => [`${position + 1}. ${row.name}`, yearSection, date, '']),
+        widths,
+        frame,
+      );
+    });
+    if (withAttendees.length === 0) {
+      sheet.table(
+        head,
+        [[{ content: 'Nobody has attended this event yet.', colSpan: 4 }]],
+        widths,
+        { college: collegeForCourse(''), title: this.eventTitle(event) },
+      );
+    }
+    return { filename: `${this.slug(event.name)}-attendance.pdf`, ...sheet.finish() };
+  }
+
+  /**
+   * A blank sheet in the school's template (header and footer on every page) that tables
+   * are drawn on. Used by both the attendance report and the attendee sheet.
+   */
+  private async startTemplateSheet() {
+    // Loaded only when a PDF is requested, so the app starts fast.
+    const [{ jsPDF }, { autoTable }, header, footer] = await Promise.all([
       import('jspdf'),
       import('jspdf-autotable'),
+      this.templateImage('header'),
+      this.templateImage('footer'),
     ]);
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    const width = doc.internal.pageSize.getWidth();
-    const margin = 14;
-    const eventLine = `${this.dateLabel(event.date)} · ${event.startTime}–${event.endTime} · ${event.venue}`;
-
-    const header = (sectionLabel: string, summary: string) => {
-      doc.setTextColor(20, 35, 79);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(17);
-      const title = event.cancelled ? `${event.name} (CANCELLED)` : event.name;
-      doc.text(this.fit(doc, title, width - margin * 2), margin, 16);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(75, 86, 117);
-      doc.text(eventLine, margin, 22);
-      doc.setDrawColor(200, 207, 224);
-      doc.line(margin, 25, width - margin, 25);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
-      doc.setTextColor(20, 35, 79);
-      doc.text(sectionLabel, margin, 33);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9);
-      doc.setTextColor(75, 86, 117);
-      doc.text(summary, width - margin, 33, { align: 'right' });
+    const doc = new jsPDF({ unit: 'pt', format: [SHEET.width, SHEET.height] });
+    const centre = (SHEET.tableLeft + SHEET.tableRight) / 2;
+    const drawFrame = (frame: { college: string; title: string }): void => {
+      if (header) doc.addImage(header, 'JPEG', 0, 0, SHEET.width, SHEET.headerHeight);
+      if (footer) doc.addImage(footer, 'JPEG', 0, SHEET.footerTop, SHEET.width, SHEET.height - SHEET.footerTop);
+      // The college name, on the header bar.
+      doc.setFont('times', 'bold');
+      doc.setFontSize(SHEET.collegeSize);
+      doc.setTextColor(255, 255, 255);
+      doc.text(frame.college, SHEET.width / 2, SHEET.collegeBaseline, { align: 'center' });
+      // The event title, just above the table (not inside it).
+      doc.setTextColor(0, 0, 0);
+      // A long title is made a little smaller (down to 9 pt) before it is shortened.
+      const room = SHEET.tableRight - SHEET.tableLeft;
+      let size = 12;
+      doc.setFontSize(size);
+      while (size > 9 && doc.getTextWidth(frame.title) > room) {
+        size -= 0.5;
+        doc.setFontSize(size);
+      }
+      doc.text(this.fit(doc, frame.title, room), centre, SHEET.tableTop - 9, { align: 'center' });
     };
-
-    const colors: Record<ReportStatus, [number, number, number]> = {
-      Present: [21, 111, 69],
-      Late: [150, 100, 0],
-      Absent: [179, 38, 30],
-      Excused: [90, 98, 122],
-      'Not yet here': [150, 100, 0],
-    };
-
-    const pages = sections.length > 0 ? sections : [];
-    pages.forEach((section, index) => {
-      if (index > 0) doc.addPage();
-      const summary = `Total ${section.rows.length} · Present ${section.present} · Late ${section.late} · Absent ${section.absent} · Excused ${section.excused}`;
-      header(section.label, summary);
-      const startPage = doc.getNumberOfPages();
-      autoTable(doc, {
-        startY: 38,
-        margin: { top: 38, left: margin, right: margin, bottom: 16 },
-        head: [['#', 'Student ID', 'Full name', 'Status', 'Time in', 'Time out']],
-        body:
-          section.rows.length > 0
-            ? section.rows.map((row) => [
-                String(row.no),
-                row.studentId,
-                row.name,
-                row.status,
-                row.timeIn,
-                row.timeOut,
-              ])
-            : [[{ content: 'No students are registered in this section yet.', colSpan: 6 }]],
-        theme: 'grid',
-        styles: { fontSize: 9, cellPadding: 2.2, textColor: [20, 35, 79], lineColor: [200, 207, 224] },
-        headStyles: { fillColor: [28, 56, 148], textColor: 255, fontStyle: 'bold' },
-        alternateRowStyles: { fillColor: [246, 248, 253] },
-        columnStyles: {
-          0: { cellWidth: 10, halign: 'center' },
-          1: { cellWidth: 30 },
-          3: { cellWidth: 26, fontStyle: 'bold' },
-          4: { cellWidth: 22, halign: 'center' },
-          5: { cellWidth: 22, halign: 'center' },
-        },
-        didParseCell: (data) => {
-          if (data.section === 'body' && data.column.index === 3) {
-            const status = String(data.cell.raw) as ReportStatus;
-            if (colors[status]) data.cell.styles.textColor = colors[status];
-          }
-        },
-        // A long section continues on the next page with the same heading.
-        didDrawPage: (data) => {
-          if (data.pageNumber > startPage) {
-            header(`${section.label} (continued)`, summary);
-          }
-        },
-      });
-    });
-    if (pages.length === 0) {
-      header('No sections', '');
-      doc.setFontSize(11);
-      doc.text('This event has no required sections to report on.', margin, 48);
-    }
-
-    // Page footers
-    const total = doc.getNumberOfPages();
-    for (let page = 1; page <= total; page += 1) {
-      doc.setPage(page);
-      const height = doc.internal.pageSize.getHeight();
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
-      doc.setTextColor(120, 128, 150);
-      doc.text(
-        `Generated ${generatedAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`,
-        margin,
-        height - 8,
-      );
-      doc.text(`Page ${page} of ${total}`, width - margin, height - 8, { align: 'right' });
-    }
-
-    const base64 = doc.output('datauristring').split(',')[1] ?? '';
+    const tableWidth = SHEET.tableRight - SHEET.tableLeft;
     return {
-      filename: `${this.slug(event.name)}-attendance.pdf`,
-      base64,
-      blob: doc.output('blob'),
+      /** Adds a table; column widths are shares of the table's width. */
+      table: (
+        head: string[],
+        body: RowInput[],
+        shares: number[],
+        frame: { college: string; title: string },
+      ): void => {
+        // The Name column takes the room the longest name needs (at least SHEET.nameMin). Every
+        // other column keeps enough room for its own heading and values, and the Signature
+        // column keeps room to sign; whatever is left over is shared out by `shares`.
+        const cellText = (cell: unknown): string =>
+          typeof cell === 'object' && cell !== null && 'content' in cell
+            ? String((cell as { content: unknown }).content)
+            : String(cell ?? '');
+        const textWidth = (text: string, style: 'normal' | 'bold'): number => {
+          doc.setFont('times', style);
+          doc.setFontSize(10);
+          return doc.getTextWidth(text);
+        };
+        const longest = Math.max(
+          textWidth(head[0], 'bold'),
+          ...body.map((row) => (Array.isArray(row) ? textWidth(cellText(row[0]), 'normal') : 0)),
+        );
+        const needs = head.slice(1).map((heading, index, rest) => {
+          const column = index + 1;
+          const widest = Math.max(
+            textWidth(heading, 'bold'),
+            ...body.map((row) =>
+              Array.isArray(row) && row.length === head.length ? textWidth(cellText(row[column]), 'normal') : 0,
+            ),
+          );
+          const isLast = index === rest.length - 1;
+          return Math.max(widest + 12, isLast ? SHEET.signatureMin : 40);
+        });
+        const shared = shares.slice(1);
+        const sharedTotal = shared.reduce((sum, share) => sum + share, 0);
+        const needTotal = needs.reduce((sum, need) => sum + need, 0);
+        const nameWidth = Math.min(Math.max(longest + 12, SHEET.nameMin), tableWidth - needTotal);
+        const extra = tableWidth - nameWidth - needTotal;
+        const widths = [nameWidth, ...needs.map((need, index) => need + (extra * shared[index]) / sharedTotal)];
+        autoTable(doc, {
+          startY: SHEET.tableTop,
+          margin: {
+            left: SHEET.tableLeft,
+            right: SHEET.width - SHEET.tableRight,
+            top: SHEET.tableTop,
+            bottom: SHEET.height - SHEET.footerTop + 8,
+          },
+          head: [head],
+          body,
+          theme: 'grid',
+          styles: {
+            font: 'times',
+            fontSize: 10,
+            textColor: 0,
+            lineColor: 0,
+            lineWidth: 0.5,
+            cellPadding: { top: 2, bottom: 2, left: 5, right: 3 },
+            minCellHeight: 13.8,
+            valign: 'middle',
+          },
+          headStyles: { fillColor: false, textColor: 0, fontStyle: 'bold', halign: 'center' },
+          columnStyles: Object.fromEntries(
+            widths.map((width, index) => [
+              index,
+              {
+                cellWidth: width,
+                // The middle columns (Year & Section, Date) are centred; Name stays on the left.
+                halign: index > 0 && index < widths.length - 1 ? ('center' as const) : ('left' as const),
+              },
+            ]),
+          ),
+          didDrawPage: () => drawFrame(frame),
+        });
+      },
+      /** Starts the next section on a fresh page. */
+      newPage: (): void => {
+        doc.addPage();
+      },
+      finish: () => ({
+        base64: doc.output('datauristring').split(',')[1] ?? '',
+        blob: doc.output('blob'),
+      }),
     };
+  }
+
+  private readonly templateImages = new Map<string, Promise<string | null>>();
+
+  /** The template's header or footer picture as a data URL, or null if it cannot be loaded. */
+  private templateImage(name: 'header' | 'footer'): Promise<string | null> {
+    let image = this.templateImages.get(name);
+    if (!image) {
+      image = fetch(`/assets/pdf/${name}.jpg`)
+        .then((response) => (response.ok ? response.blob() : Promise.reject(new Error('missing'))))
+        .then(
+          (blob) =>
+            new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = () => reject(reader.error);
+              reader.readAsDataURL(blob);
+            }),
+        )
+        .catch(() => {
+          this.templateImages.delete(name); // try again next time
+          return null;
+        });
+      this.templateImages.set(name, image);
+    }
+    return image;
   }
 
   /** Opens the phone's share sheet (print, save, send) or downloads on the web. */
@@ -265,18 +417,14 @@ export class AttendanceReportService {
     const date = new Date(value);
     return Number.isNaN(date.getTime())
       ? '—'
-      : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      : timeOfDay(date);
   }
 
-  private dateLabel(value: string): string {
-    return new Date(`${value}T12:00:00`).toLocaleDateString([], {
-      weekday: 'long',
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-    });
+  private eventTitle(event: SchoolEvent): string {
+    return event.cancelled ? `${event.name} (CANCELLED)` : event.name;
   }
 
+  /** Shortens text with "…" until it fits the width. */
   private fit(doc: { getTextWidth(text: string): number }, text: string, max: number): string {
     if (doc.getTextWidth(text) <= max) return text;
     let shortened = text;

@@ -52,6 +52,9 @@ import {
   chevronBackOutline,
   eyeOutline,
   imageOutline,
+  barChartOutline,
+  chevronDownOutline,
+  documentTextOutline,
 } from 'ionicons/icons';
 import { AuthPart } from './parts/auth.part';
 
@@ -125,6 +128,9 @@ export class HomePage extends AuthPart implements OnInit, OnDestroy {
       chevronBackOutline,
       eyeOutline,
       imageOutline,
+      barChartOutline,
+      chevronDownOutline,
+      documentTextOutline,
     });
     this.route.paramMap.subscribe((params) => {
       this.handleScreen(params.get('screen') ?? 'login');
@@ -178,9 +184,6 @@ export class HomePage extends AuthPart implements OnInit, OnDestroy {
       if (screen === 'settings-sections' && this.auth.role() === 'super_admin') {
         void this.loadSections();
       }
-      if (screen === 'seating' && this.auth.role() === 'super_admin') {
-        void this.loadSections();
-      }
       if (screen === 'settings-account-reset' && this.auth.role() === 'super_admin') {
         void this.loadSections();
       }
@@ -191,7 +194,9 @@ export class HomePage extends AuthPart implements OnInit, OnDestroy {
         void this.loadSections();
       }
       if (screen === 'compose-sms') this.prepareCompose();
-      if (role === 'student' && screen === 'history') void this.loadMyExcuses();
+      if (role === 'student' && (screen === 'history' || screen === 'event-details')) {
+        void this.loadMyExcuses();
+      }
       if (role === 'super_admin') {
         if (screen === 'home' || screen === 'excuses') void this.loadExcuses();
         if (screen === 'settings-activity') void this.loadAudit(true);

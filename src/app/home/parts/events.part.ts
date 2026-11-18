@@ -1,5 +1,6 @@
+import { clock12, schoolDateKey } from '../../core/services/time-format';
 import { computed, signal } from '@angular/core';
-import { eventActions } from '../../core/services/event-actions';
+import { eventActions, isEventOver, isEventUpcoming } from '../../core/services/event-actions';
 import { EventFilter } from '../../core/services/event-calendar.service';
 import { AnnouncementAudience, SchoolEvent } from '../../core/models/school-event.models';
 import { AttendancePart } from './attendance.part';
@@ -11,14 +12,17 @@ export abstract class EventsPart extends AttendancePart {
   readonly eventFilter = signal<EventFilter>('upcoming');
   readonly eventView = signal<'list' | 'calendar'>('list');
   readonly calendarMonth = signal(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  readonly selectedDay = signal(this.calendar.toDateKey(new Date()));
-  readonly todayKey = this.calendar.toDateKey(new Date());
+  readonly selectedDay = signal(schoolDateKey());
+  get todayKey(): string {
+    this.schoolDay(); // updates at midnight
+    return schoolDateKey();
+  }
   readonly weekdayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   readonly calendarCells = computed(() =>
     this.calendar.monthCells(
       this.calendarMonth().getFullYear(),
       this.calendarMonth().getMonth(),
-      this.state().events,
+      this.myEvents(),
     ),
   );
   readonly calendarTitle = computed(() =>
@@ -26,17 +30,85 @@ export abstract class EventsPart extends AttendancePart {
   );
   /** What the Events page lists: the chosen filter, or the tapped calendar day. */
   readonly visibleEvents = computed(() => {
+    this.schoolDay(); // recompute when the school day changes
     if (this.eventView() === 'calendar') {
-      return this.calendar.eventsOn(this.state().events, this.selectedDay());
+      return this.calendar.eventsOn(this.myEvents(), this.selectedDay());
     }
-    const listed = this.calendar.filter(this.state().events, this.eventFilter());
+    const listed = this.calendar.filter(this.myEvents(), this.eventFilter());
     const status = this.eventStatusFilter();
     return this.auth.role() === 'student' || status === 'all'
       ? listed
       : listed.filter((event) => (event.approvalStatus ?? 'approved') === status);
   });
+  /** How many events fall in each group of the filter, so nothing is hidden by surprise. */
+  readonly eventPhaseCounts = computed(() => {
+    this.schoolDay(); // recompute when the school day changes
+    const counts = { ongoing: 0, upcoming: 0, past: 0, all: 0 };
+    const status = this.eventStatusFilter();
+    const events = this.myEvents().filter(
+      (event) =>
+        this.auth.role() === 'student' ||
+        status === 'all' ||
+        (event.approvalStatus ?? 'approved') === status,
+    );
+    for (const event of events) {
+      counts[this.calendar.phase(event)] += 1;
+      counts.all += 1;
+    }
+    return counts;
+  });
+  /** Events the live monitor can open: approved, already started, and not finished yet. */
+  readonly liveEvents = computed(() => {
+    this.schoolDay(); // recompute when the school day changes
+    return this.workingEvents().filter(
+      (event) => !isEventOver(event) && !isEventUpcoming(event),
+    );
+  });
+  /** Events with something to report: approved and already started (today or past). */
+  readonly reportEvents = computed(() => {
+    this.schoolDay();
+    return this.workingEvents().filter((event) => !isEventUpcoming(event));
+  });
+  // ---- Reports: the admin picks the event first ----
+  /** True while the report page shows the list of events to choose from. */
+  readonly reportPicking = signal(false);
+  /** The report was opened from that list, so Back returns to it. */
+  readonly reportFromList = signal(false);
+  readonly reportEventSearch = signal('');
+  readonly reportPickList = computed(() => {
+    const query = this.reportEventSearch().trim().toLowerCase();
+    return [...this.reportEvents()]
+      .filter((event) => !query || event.name.toLowerCase().includes(query))
+      .sort((a, b) => `${b.date}${b.startTime}`.localeCompare(`${a.date}${a.startTime}`));
+  });
+  /** The Reports card on the home: choose an event first, nothing is opened for you. */
+  openReportPicker(): void {
+    this.reportPicking.set(true);
+    this.reportFromList.set(false);
+    this.reportEventSearch.set('');
+    this.go('reports');
+  }
+  chooseReportEvent(id: string): void {
+    this.selectEvent(id);
+    this.reportPicking.set(false);
+    this.reportFromList.set(true);
+  }
+  /** The Attendance report button on an event: that event's report, straight away. */
+  openReport(): void {
+    this.reportPicking.set(false);
+    this.reportFromList.set(false);
+    this.go('reports');
+  }
+  reportBack(): void {
+    if (this.reportFromList()) {
+      this.reportPicking.set(true);
+      this.reportFromList.set(false);
+      return;
+    }
+    this.go('event-details');
+  }
   setEventFilter(value: unknown): void {
-    if (value === 'upcoming' || value === 'past' || value === 'all') {
+    if (value === 'ongoing' || value === 'upcoming' || value === 'past' || value === 'all') {
       this.eventFilter.set(value);
     }
   }
@@ -63,9 +135,12 @@ export abstract class EventsPart extends AttendancePart {
   }
   eventsEmptyHeading(): string {
     if (this.eventView() === 'calendar') return 'No events on this day';
-    return { upcoming: 'No upcoming events', past: 'No past events', all: 'No events yet' }[
-      this.eventFilter()
-    ];
+    return {
+      ongoing: 'No ongoing events',
+      upcoming: 'No upcoming events',
+      past: 'No past events',
+      all: 'No events yet',
+    }[this.eventFilter()];
   }
   eventsEmptyMessage(): string {
     if (this.eventView() === 'calendar') return 'Pick a day with a dot to see its events.';
@@ -77,7 +152,7 @@ export abstract class EventsPart extends AttendancePart {
       : 'Create the first event to get your calendar started.';
   }
 
-  // ======================= Admin: cancel / postpone an event =======================
+  // ======================= Admin: cancel an event =======================
   protected eventAudience(event: SchoolEvent): AnnouncementAudience {
     return event.requiredSections?.length
       ? { type: 'sections', sectionIds: [...event.requiredSections] }
@@ -106,6 +181,43 @@ export abstract class EventsPart extends AttendancePart {
       `Cancelled: ${event.name}`,
       `${event.name} on ${this.formatDate(event.date)} has been cancelled. ${reason}`,
       this.eventAudience(event),
+    );
+  }
+
+  /** Everyone still checked in at the open event (no time-out yet). */
+  stillHereCount(): number {
+    const event = this.activeEvent();
+    if (!event) return 0;
+    return this.state().attendance.filter(
+      (record) =>
+        record.eventId === event.id && !!record.timeIn && !record.timeOut && !record.excused,
+    ).length;
+  }
+
+  /**
+   * The admin presses this when the event really ends. Everyone still checked in
+   * is checked out at this moment and scanning closes.
+   */
+  async finishActiveEvent(): Promise<void> {
+    const event = this.activeEvent();
+    if (!event || !this.actions().finish) return;
+    const here = this.stillHereCount();
+    const confirmed = await this.confirm(
+      'Finish this event now?',
+      here > 0
+        ? `"${event.name}" ends now. The ${here} student${here === 1 ? '' : 's'} still checked in will be checked out at this moment, and scanning will close. This cannot be undone.`
+        : `"${event.name}" ends now and scanning will close. This cannot be undone.`,
+      'Finish event',
+    );
+    if (!confirmed) return;
+    const closed = this.attendance.finishEvent(event.id, this.isOnline());
+    this.stopScanner();
+    this.scanResult.set(null);
+    await this.syncWorkspace();
+    this.showToast(
+      closed > 0
+        ? `Event finished. ${closed} student${closed === 1 ? '' : 's'} checked out.`
+        : 'Event finished.',
     );
   }
 
@@ -146,60 +258,15 @@ export abstract class EventsPart extends AttendancePart {
     this.showToast('Event is back on. Post an update so students know.');
   }
 
-  postponeForm = { date: '', startTime: '08:00', endTime: '16:00', reason: '' };
-  readonly postponeError = signal<string | null>(null);
-  openPostpone(): void {
-    const event = this.activeEvent();
-    if (!event || this.auth.role() !== 'super_admin') return;
-    this.postponeForm = {
-      date: event.date,
-      startTime: event.startTime,
-      endTime: event.endTime,
-      reason: '',
-    };
-    this.postponeError.set(null);
-    this.go('postpone-event');
-  }
-  async savePostpone(): Promise<void> {
-    const event = this.activeEvent();
-    if (!event) return;
-    const { date, startTime, endTime, reason } = this.postponeForm;
-    this.postponeError.set(null);
-    if (!date || date < this.minimumEventDate) {
-      this.postponeError.set('Choose today or a future date.');
-      return;
-    }
-    if (!startTime || !endTime || endTime <= startTime) {
-      this.postponeError.set('The end time must be after the start time.');
-      return;
-    }
-    if (date === event.date && startTime === event.startTime && endTime === event.endTime) {
-      this.postponeError.set('Change the date or the time to move the event.');
-      return;
-    }
-    if (reason.trim().length < 3) {
-      this.postponeError.set('Give a short reason for the change.');
-      return;
-    }
-    const before = { date: event.date, startTime: event.startTime, endTime: event.endTime };
-    this.store.update((state) => {
-      const target = state.events.find((item) => item.id === event.id);
-      if (!target) return;
-      target.postponedFrom ??= before;
-      target.date = date;
-      target.startTime = startTime;
-      target.endTime = endTime;
-      target.cancelled = false;
-      delete target.cancelReason;
-    });
-    this.go('event-details');
-    await this.publishAnnouncement(
-      `Moved: ${event.name}`,
-      `${event.name} is moved from ${this.formatDate(before.date)} ${before.startTime} to ${this.formatDate(date)} ${startTime}–${endTime}. ${reason.trim()}`,
-      this.eventAudience(event),
-    );
-  }
   async approveEvent(eventId: string): Promise<void> {
+    const named = this.state().events.find((item) => item.id === eventId);
+    const confirmed = await this.confirm(
+      'Approve this event?',
+      `"${named?.name ?? 'This event'}" will be approved. Scanning, attendance and reports open for it, and the students in its sections will see it.`,
+      'Approve',
+      false,
+    );
+    if (!confirmed) return;
     this.store.update((state) => {
       const event = state.events.find((item) => item.id === eventId);
       if (event) {
@@ -217,7 +284,7 @@ export abstract class EventsPart extends AttendancePart {
   }
 
   // ---- Approval status ----
-  readonly eventStatusFilter = signal<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  readonly eventStatusFilter = signal<'all' | 'pending' | 'approved' | 'rejected'>('approved');
   setEventStatusFilter(value: unknown): void {
     if (value === 'all' || value === 'pending' || value === 'approved' || value === 'rejected') {
       this.eventStatusFilter.set(value);
@@ -267,6 +334,12 @@ export abstract class EventsPart extends AttendancePart {
     const result = await alert.onDidDismiss();
     const reason = String(result.data?.values?.reason ?? '').trim();
     if (result.role !== 'confirm' || !reason) return;
+    const confirmed = await this.confirm(
+      'Send this rejection?',
+      `"${event.name}" goes back to the organizer with this reason: "${reason.slice(0, 200)}". They can edit it and send it again.`,
+      'Reject event',
+    );
+    if (!confirmed) return;
     this.store.update((state) => {
       const target = state.events.find((item) => item.id === eventId);
       if (target) {
@@ -277,30 +350,25 @@ export abstract class EventsPart extends AttendancePart {
     await this.syncWorkspace();
     this.showToast('Event rejected. The organizer can edit and resubmit it.', 'warning');
   }
-  eventSeatingSummary(event: SchoolEvent): string {
-    if (!event.seatingPlan) {
-      return `${event.seats.filter((seat) => seat.studentId !== null).length} students`;
+  eventAttendeeCount(event: SchoolEvent): number {
+    if (event.roster) {
+      return new Set(Object.values(event.roster).flat()).size;
     }
-    const chairs = event.seats.length;
-    return `${chairs} chairs`;
+    if (
+      this.auth.role() === 'student' &&
+      Number.isInteger(event.expectedAttendeeCount) &&
+      (event.expectedAttendeeCount ?? -1) >= 0
+    ) {
+      return event.expectedAttendeeCount ?? 0;
+    }
+    const requiredSections = new Set(event.requiredSections ?? []);
+    return this.state().students.filter(
+      (student) =>
+        requiredSections.has(student.sectionId ?? '') ||
+        event.sections.includes(student.section),
+    ).length;
   }
   eventSectionCount(event: SchoolEvent): number {
     return event.requiredSections?.length || event.sections.length;
-  }
-  updateGracePeriod(value: number): void {
-    const event = this.activeEvent();
-    if (event)
-      this.events.save(
-        {
-          name: event.name,
-          date: event.date,
-          startTime: event.startTime,
-          endTime: event.endTime,
-          venue: event.venue,
-          description: event.description,
-          graceMinutes: Number(value) || 0,
-        },
-        event.id,
-      );
   }
 }

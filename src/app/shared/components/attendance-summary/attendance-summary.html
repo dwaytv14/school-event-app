@@ -6,20 +6,34 @@
   <article class="stat"><strong>{{ summary().present }}</strong><span>Present</span></article>
   <article class="stat"><strong>{{ summary().late }}</strong><span>Late</span></article>
   <article class="stat"><strong>{{ summary().absent }}</strong><span>Absent</span></article>
+  <article class="stat"><strong>{{ summary().excused }}</strong><span>Excused</span></article>
 </section>
 
-@for (row of summary().rows; track row.event.id) {
+@if (summary().rows.length > 0) {
+<div class="filters" role="group" aria-label="Show events">
+  @for (option of filterOptions; track option.key) {
+  <button
+    type="button"
+    [class.on]="filter() === option.key"
+    [attr.aria-pressed]="filter() === option.key"
+    (click)="filter.set(option.key)"
+  >{{ option.label }} <span class="count">{{ counts()[option.key] }}</span></button>
+  }
+</div>
+}
+
+@for (row of visibleRows(); track row.event.id) {
 <article class="row">
   <div class="main">
     <strong>{{ row.event.name }}</strong>
-    <small>{{ date(row.event.date) }} · {{ row.event.startTime }}–{{ row.event.endTime }} · {{ row.event.venue }}</small>
+    <small>{{ date(row.event.date) }} · {{ clock(row.event.startTime) }}–{{ clock(row.event.endTime) }} · {{ row.event.venue }}</small>
     @if (row.record && !row.record.excused) {
     <div class="times">
       <span>IN {{ time(row.record.timeIn) }}</span>
       <span>OUT {{ time(row.record.timeOut) }}</span>
     </div>
     }
-    @if (allowExcuse() && row.status === 'Absent') {
+    @if (allowExcuse() && canExcuse(row)) {
     @let request = requestFor(row.event.id);
     @if (request?.status === 'pending') {
     <p class="note">Excuse request sent. Waiting for the admin.</p>
@@ -37,9 +51,17 @@
   <ion-chip [color]="color(row.status)">{{ row.status }}</ion-chip>
 </article>
 } @empty {
+@if (summary().rows.length > 0) {
+<app-state-panel
+  icon="calendar-outline"
+  heading="Nothing here"
+  message="No events match this filter. Choose All to see every event."
+/>
+} @else {
 <app-state-panel
   icon="calendar-outline"
   heading="No required events yet"
   message="Events this section must attend will show up here with check-in and check-out times."
 />
+}
 }

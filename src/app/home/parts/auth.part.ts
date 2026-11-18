@@ -1,4 +1,5 @@
 import { computed, signal } from '@angular/core';
+import { composeFullName } from '../../core/services/student-name';
 import { AdminPart } from './admin.part';
 
 /** Signing in and up, account security, and the profile photo. */
@@ -8,12 +9,29 @@ export abstract class AuthPart extends AdminPart {
   readonly apiCheckMessage = signal<string | null>(null);
   signupForm = {
     studentNumber: '',
-    name: '',
+    firstName: '',
+    middleName: '',
+    lastName: '',
+    extension: '',
     course: '',
     yearLevel: '',
     section: '',
     mobile: '',
   };
+
+  /** Which account form is open as a pop-up: username, password or contact number. */
+  readonly securityModal = signal<'username' | 'password' | 'contact' | null>(null);
+  securityTitle(): string {
+    return {
+      username: 'Change username',
+      password: 'Change password',
+      contact: 'Change contact number',
+    }[this.securityModal() ?? 'username'];
+  }
+  closeSecurityModal(): void {
+    this.securityModal.set(null);
+    this.securityError.set(null);
+  }
 
   // ---- Change contact number (students) ----
   readonly contactStep = signal<'enter' | 'verify'>('enter');
@@ -29,7 +47,7 @@ export abstract class AuthPart extends AdminPart {
     this.contactForm = { mobile: '', currentPassword: '', code: '' };
     this.contactStep.set('enter');
     this.securityError.set(null);
-    this.go('settings-contact');
+    this.securityModal.set('contact');
   }
   normalizeContactMobile(event: Event): void {
     const input = event.target;
@@ -107,7 +125,7 @@ export abstract class AuthPart extends AdminPart {
       await this.workspaceSync.syncNow().catch(() => undefined);
       this.contactForm = { mobile: '', currentPassword: '', code: '' };
       this.showToast('Contact number updated.');
-      this.go('settings');
+      this.closeSecurityModal();
     } catch (error) {
       this.securityError.set(this.workspaceApi.errorMessage(error));
     } finally {
@@ -132,7 +150,7 @@ export abstract class AuthPart extends AdminPart {
       confirmPassword: '',
     };
     this.securityError.set(null);
-    this.go(screen);
+    this.securityModal.set(screen === 'settings-username' ? 'username' : 'password');
   }
 
   async saveNewPassword(): Promise<void> {
@@ -164,7 +182,7 @@ export abstract class AuthPart extends AdminPart {
       this.securityForm.newPassword = '';
       this.securityForm.confirmPassword = '';
       this.showToast('Password changed.');
-      this.go('settings');
+      this.closeSecurityModal();
     } catch (error) {
       this.securityError.set(this.workspaceApi.errorMessage(error));
     } finally {
@@ -205,7 +223,7 @@ export abstract class AuthPart extends AdminPart {
       this.securityForm.currentPassword = '';
       this.securityForm.newUsername = '';
       this.showToast('Username changed.');
-      this.go('settings');
+      this.closeSecurityModal();
     } catch (error) {
       this.securityError.set(this.workspaceApi.errorMessage(error));
     } finally {
@@ -318,7 +336,10 @@ export abstract class AuthPart extends AdminPart {
     this.auth.error.set(null);
     this.signupForm = {
       studentNumber: '',
-      name: '',
+      firstName: '',
+      middleName: '',
+      lastName: '',
+      extension: '',
       course: '',
       yearLevel: '',
       section: '',
@@ -332,13 +353,16 @@ export abstract class AuthPart extends AdminPart {
   normalizeStudentNumber(event: Event): void {
     const input = event.target;
     if (input instanceof HTMLInputElement) {
-      const clean = input.value.replace(/\D/g, '');
+      const clean = input.value.replace(/\D/g, '').slice(0, 5);
       input.value = clean;
       this.signupForm.studentNumber = clean;
     }
   }
-  /** Full name: letters (including accents and ñ) and single spaces only. */
-  normalizeName(event: Event): void {
+  /** A name part: letters (including accents and ñ) and single spaces only. */
+  normalizeName(
+    event: Event,
+    field: 'firstName' | 'middleName' | 'lastName' = 'firstName',
+  ): void {
     const input = event.target;
     if (input instanceof HTMLInputElement) {
       const clean = input.value
@@ -346,7 +370,16 @@ export abstract class AuthPart extends AdminPart {
         .replace(/ {2,}/g, ' ')
         .replace(/^ /, '');
       input.value = clean;
-      this.signupForm.name = clean;
+      this.signupForm[field] = clean;
+    }
+  }
+  /** Extension such as Jr., Sr., II or III: letters, dots and Roman numerals only. */
+  normalizeExtension(event: Event): void {
+    const input = event.target;
+    if (input instanceof HTMLInputElement) {
+      const clean = input.value.replace(/[^\p{L}.]/gu, '').slice(0, 10);
+      input.value = clean;
+      this.signupForm.extension = clean;
     }
   }
   /** Contact number: digits only, at most 11 (09XXXXXXXXX). */
@@ -360,9 +393,17 @@ export abstract class AuthPart extends AdminPart {
   }
   /** Returns a message when the registration details are not valid. */
   protected signupProblem(): string | null {
-    const name = this.signupForm.name.trim();
-    if (!/^\p{L}+( \p{L}+)*$/u.test(name)) {
-      return 'Full name can contain letters and spaces only.';
+    const { firstName, middleName, lastName, extension } = this.signupForm;
+    if (!firstName.trim() || !middleName.trim() || !lastName.trim()) {
+      return 'Enter your first name, middle name, and last name.';
+    }
+    for (const part of [firstName, middleName, lastName]) {
+      if (!/^\p{L}+( \p{L}+)*$/u.test(part.trim())) {
+        return 'Names can contain letters and spaces only.';
+      }
+    }
+    if (extension.trim() && !/^\p{L}+\.?$/u.test(extension.trim())) {
+      return 'Extension can be something like Jr., Sr., II or III.';
     }
     if (!/^09\d{9}$/.test(this.signupForm.mobile.trim())) {
       return 'Enter your contact number as 11 digits starting with 09, for example 09123456789.';
@@ -387,7 +428,11 @@ export abstract class AuthPart extends AdminPart {
       if (registering) {
         await this.auth.register(username, this.authPassword, {
           studentNumber: `PPY-${this.signupForm.studentNumber}`,
-          name: this.signupForm.name.trim(),
+          name: composeFullName(this.signupForm),
+          firstName: this.signupForm.firstName.trim(),
+          middleName: this.signupForm.middleName.trim(),
+          lastName: this.signupForm.lastName.trim(),
+          extension: this.signupForm.extension.trim(),
           course: this.signupForm.course,
           yearLevel: this.signupForm.yearLevel,
           section: this.signupForm.section,

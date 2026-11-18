@@ -150,11 +150,9 @@ try {
   const before = must(await call('GET', '/workspace', admin), 'read workspace').state;
   const existingIds = new Set(before.events.map((event) => event.id));
   const dwayt = before.students.find((student) => student.id === 'PPY-0081');
-  const seatsFor = (id, blocks) => { const seats = []; blocks.forEach(([rows, per], block) => { for (let i = 0; i < rows * per; i += 1) seats.push({ id: `${id}-shared-${seats.length + 1}`, block, section: 'Shared seating', row: Math.floor(i / per) + 1, number: (i % per) + 1, studentId: null }); }); return seats; };
   const toEvent = (spec, status) => ({
     id: spec.id, name: spec.name, date: spec.rejectFirst ? spec.rejectFirst.original : spec.date, startTime: spec.start, endTime: spec.end, venue: spec.venue,
-    description: spec.desc, graceMinutes: 15, sections: spec.groups.map(label), seats: seatsFor(spec.id, spec.rows), requiredSections: spec.groups,
-    seatingPlan: { gymnasiumBenchGroups: [], sharedSeatCount: spec.rows.reduce((n, [r, p]) => n + r * p, 0), rows: spec.rows[0][0], seatsPerRow: spec.rows[0][1], blocks: spec.rows.map(([rows, seatsPerRow]) => ({ rows, seatsPerRow })), sharedSectionIds: spec.groups, sectionSeatCounts: {} },
+    description: spec.desc, graceMinutes: 15, sections: spec.groups.map(label), seats: [], requiredSections: spec.groups,
     approvalStatus: status,
   });
 

@@ -272,47 +272,17 @@ function isStudentRequired(event, student) {
   if (event.roster) {
     return Object.values(event.roster).some((ids) => ids.includes(student.id));
   }
-  return (event.requiredSections ?? []).includes(student.sectionId ?? '');
+  const requiredSections = event.requiredSections ?? [];
+  return (
+    requiredSections.includes(student.sectionId ?? '') ||
+    (event.sections ?? []).includes(student.section)
+  );
 }
 
 function addStudentToEvent(event, student) {
-  if (event.roster) return;
-  if (!(event.requiredSections ?? []).includes(student.sectionId)) return;
+  if (event.roster || !isStudentRequired(event, student)) return;
   if (!Array.isArray(event.sections)) event.sections = [];
   if (!event.sections.includes(student.section)) event.sections.push(student.section);
-  if (event.seatingPlan) return;
-  if (!Array.isArray(event.seats)) event.seats = [];
-  if (event.seats.some((seat) => seat.studentId === student.id)) return;
-
-  const sectionSeats = event.seats.filter(
-    (seat) => seat.section === student.section,
-  );
-  const availableSeat = sectionSeats.find((seat) => !seat.studentId);
-  if (availableSeat) {
-    availableSeat.studentId = student.id;
-    return;
-  }
-  const sectionSlug = student.section.replaceAll(' ', '-').toLowerCase();
-  if (sectionSeats.length === 0) {
-    event.seats.push(
-      ...Array.from({ length: 12 }, (_, index) => ({
-        id: `${event.id}-${sectionSlug}-${index + 1}`,
-        section: student.section,
-        row: Math.floor(index / 6) + 1,
-        number: (index % 6) + 1,
-        studentId: index === 0 ? student.id : null,
-      })),
-    );
-    return;
-  }
-  const seatCount = sectionSeats.length;
-  event.seats.push({
-    id: `${event.id}-${sectionSlug}-${seatCount + 1}`,
-    section: student.section,
-    row: Math.floor(seatCount / 6) + 1,
-    number: (seatCount % 6) + 1,
-    studentId: student.id,
-  });
 }
 
 async function registerStudent(body, env) {
@@ -320,10 +290,21 @@ async function registerStudent(body, env) {
   const password = body?.password;
   const studentNumber =
     typeof body?.studentNumber === 'string' ? body.studentNumber.trim() : '';
-  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const namePart = (value) =>
+    typeof value === 'string' ? value.trim().replace(/ {2,}/g, ' ') : '';
+  const firstName = namePart(body?.firstName);
+  const middleName = namePart(body?.middleName);
+  const lastName = namePart(body?.lastName);
+  const extension = namePart(body?.extension);
+  const splitName = Boolean(firstName || middleName || lastName);
+  const name = splitName
+    ? [firstName, middleName, lastName, extension].filter(Boolean).join(' ')
+    : typeof body?.name === 'string'
+      ? body.name.trim()
+      : '';
   let course = typeof body?.course === 'string' ? body.course : '';
   let yearLevel = typeof body?.yearLevel === 'string' ? body.yearLevel : '';
-  const sectionName = typeof body?.section === 'string' ? body.section : '';
+  const sectionName = typeof body?.section === 'string' ? body.section.trim() : '';
   const requestedSectionId =
     typeof body?.sectionId === 'string' ? body.sectionId : '';
   const mobile = normalizedMobile(body?.mobile);
@@ -336,22 +317,40 @@ async function registerStudent(body, env) {
   if (!validPassword(password)) {
     return json({ error: 'Password must be 8–128 characters.' }, 400);
   }
-  if (!/^PPY-\d{1,12}$/.test(studentNumber)) {
-    return json({ error: 'Student ID must use the format PPY- followed by numbers.' }, 400);
+  if (!/^PPY-\d{1,5}$/.test(studentNumber)) {
+    return json({ error: 'Student ID must use the format PPY- followed by up to 5 numbers.' }, 400);
   }
-  if (!name || name.length > 120) {
-    return json({ error: 'Enter a full name of up to 120 characters.' }, 400);
-  }
-  if (!/^\p{L}+( \p{L}+)*$/u.test(name)) {
-    return json({ error: 'Full name can contain letters and spaces only.' }, 400);
+  if (splitName) {
+    if (!firstName || !middleName || !lastName) {
+      return json({ error: 'Enter your first name, middle name, and last name.' }, 400);
+    }
+    const lettersOnly = /^\p{L}+( \p{L}+)*$/u;
+    if (
+      ![firstName, middleName, lastName].every(
+        (part) => part.length <= 60 && lettersOnly.test(part),
+      )
+    ) {
+      return json({ error: 'Names can contain letters and spaces only.' }, 400);
+    }
+    if (extension && !/^\p{L}+\.?$/u.test(extension)) {
+      return json({ error: 'Extension can be something like Jr., Sr., II or III.' }, 400);
+    }
+  } else {
+    if (!name || name.length > 120) {
+      return json({ error: 'Enter a full name of up to 120 characters.' }, 400);
+    }
+    if (!/^\p{L}+( \p{L}+)*$/u.test(name)) {
+      return json({ error: 'Full name can contain letters and spaces only.' }, 400);
+    }
   }
   if (
     !requestedSectionId &&
     (!COURSES.includes(course) ||
       !YEAR_LEVELS.includes(yearLevel) ||
-      !['A', 'B'].includes(sectionName))
+      !sectionName ||
+      sectionName.length > 32)
   ) {
-    return json({ error: 'Select a course, year level, and section.' }, 400);
+    return json({ error: 'Select a course, year level, and an available section.' }, 400);
   }
   if (!mobile) {
     return json({ error: 'Contact number must be numbers only: 11 digits starting with 09, such as 09123456789.' }, 400);
@@ -377,18 +376,32 @@ async function registerStudent(body, env) {
     course = section.course;
     yearLevel = section.year_level;
   } else {
-    await env.DB.prepare(
-      `INSERT OR IGNORE INTO sections (id, organization_id, course, year_level, name)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-      .bind(crypto.randomUUID(), organization.id, course, yearLevel, sectionName)
-      .run();
     section = await env.DB.prepare(
       `SELECT id, course, year_level, name FROM sections
        WHERE organization_id = ? AND course = ? AND year_level = ? AND name = ?`,
     )
       .bind(organization.id, course, yearLevel, sectionName)
       .first();
+    if (!section && ['A', 'B'].includes(sectionName)) {
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO sections (id, organization_id, course, year_level, name)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+        .bind(crypto.randomUUID(), organization.id, course, yearLevel, sectionName)
+        .run();
+      section = await env.DB.prepare(
+        `SELECT id, course, year_level, name FROM sections
+         WHERE organization_id = ? AND course = ? AND year_level = ? AND name = ?`,
+      )
+        .bind(organization.id, course, yearLevel, sectionName)
+        .first();
+    }
+    if (!section) {
+      return json(
+        { error: 'That section is not set up. Ask the super admin to add it in Settings > Courses & sections.' },
+        400,
+      );
+    }
   }
   if (!section) return json({ error: 'The selected section could not be created.' }, 500);
   const userId = crypto.randomUUID();
@@ -398,6 +411,7 @@ async function registerStudent(body, env) {
   const student = {
     id: studentId,
     name,
+    ...(splitName ? { firstName, middleName, lastName, extension } : {}),
     course,
     yearLevel,
     sectionId: section.id,
@@ -831,6 +845,9 @@ async function auditWorkspaceChange(env, user, before, after) {
       const reason = now === 'rejected' && event.rejectionReason ? ` (${event.rejectionReason})` : '';
       lines.push([`event_${now}`, `${verb} the event "${event.name}"${reason}`]);
     }
+    if (!old.finishedAt && event.finishedAt) {
+      lines.push(['event_finished', `Finished the event "${event.name}"`]);
+    }
     if (!!old.cancelled !== !!event.cancelled) {
       lines.push([
         event.cancelled ? 'event_cancelled' : 'event_reinstated',
@@ -844,26 +861,6 @@ async function auditWorkspaceChange(env, user, before, after) {
       old.name !== event.name
     ) {
       lines.push(['event_edited', `Changed the details of "${event.name}"`]);
-    }
-  }
-  const knownAttendance = new Map((before.attendance ?? []).map((item) => [item.id, item]));
-  for (const record of after.attendance ?? []) {
-    const old = knownAttendance.get(record.id);
-    const who = students.get(record.studentId)?.name ?? record.studentId;
-    if (record.manual && (!old || !old.manual || old.excused !== record.excused)) {
-      lines.push([
-        record.excused ? 'attendance_excused' : 'attendance_manual',
-        record.excused
-          ? `Marked ${who} excused for "${eventName(record.eventId)}"`
-          : `Checked ${who} in/out by hand at "${eventName(record.eventId)}"`,
-      ]);
-    }
-  }
-  const nowIds = new Set((after.attendance ?? []).map((item) => item.id));
-  for (const old of before.attendance ?? []) {
-    if (old.manual && !nowIds.has(old.id)) {
-      const who = students.get(old.studentId)?.name ?? old.studentId;
-      lines.push(['attendance_undo', `Undid a by-hand entry for ${who} at "${eventName(old.eventId)}"`]);
     }
   }
   const knownAnnouncements = new Set((before.announcements ?? []).map((item) => item.id));
@@ -985,7 +982,6 @@ async function deleteManagedUser(admin, env, username) {
     const studentId = target.student_id;
     const outcome = await mutateWorkspace(env, admin.organization_id, (state) => {
       state.students = (state.students ?? []).filter((item) => item.id !== studentId);
-      state.attendance = (state.attendance ?? []).filter((item) => item.studentId !== studentId);
       state.violations = (state.violations ?? []).filter((item) => item.studentId !== studentId);
       (state.events ?? []).forEach((event) =>
         (event.seats ?? []).forEach((seat) => {
@@ -994,6 +990,7 @@ async function deleteManagedUser(admin, env, username) {
       );
     });
     if (outcome.error) return json({ error: outcome.error }, outcome.status ?? 500);
+    await removeAttendanceWhere(env, admin.organization_id, 'student_id', [studentId]);
     try {
       await env.DB.prepare('DELETE FROM excuse_requests WHERE organization_id = ? AND student_id = ?')
         .bind(admin.organization_id, studentId)
@@ -1013,6 +1010,7 @@ async function deleteEvent(user, env, eventId) {
     return json({ error: 'You cannot delete events.' }, 403);
   }
   let deletedName = '';
+  const hasAttendance = (await liveAttendanceCount(env, user.organization_id, eventId)) > 0;
   const outcome = await mutateWorkspace(env, user.organization_id, (state) => {
     const event = (state.events ?? []).find((item) => item.id === eventId);
     if (!event) return { error: 'That event was not found.', status: 404 };
@@ -1022,17 +1020,16 @@ async function deleteEvent(user, env, eventId) {
         return { error: 'You can only delete your own events that are not approved.', status: 403 };
       }
     }
-    const hasAttendance = (state.attendance ?? []).some((record) => record.eventId === eventId);
     if (status === 'approved' && hasAttendance) {
       return { error: 'This event already has attendance. Cancel it instead of deleting it.', status: 409 };
     }
     deletedName = event.name;
     state.events = state.events.filter((item) => item.id !== eventId);
-    state.attendance = (state.attendance ?? []).filter((record) => record.eventId !== eventId);
     if (state.selectedEventId === eventId) state.selectedEventId = state.events[0]?.id ?? '';
     return null;
   });
   if (outcome.error) return json({ error: outcome.error }, outcome.status ?? 500);
+  await removeAttendanceWhere(env, user.organization_id, 'event_id', [eventId]);
   try {
     await env.DB.prepare('DELETE FROM excuse_requests WHERE organization_id = ? AND event_id = ?')
       .bind(user.organization_id, eventId)
@@ -1099,9 +1096,15 @@ async function createExcuse(request, user, env) {
   if (!student || !isStudentRequired(event, student)) {
     return json({ error: 'Your section is not required at that event.' }, 403);
   }
-  const attended = (state.attendance ?? []).find(
-    (record) =>
-      record.eventId === event.id && record.studentId === student.id && !record.excused,
+  // Excuse letters open the day before the event (school time, UTC+8).
+  const schoolToday = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+  const opens = new Date(`${event.date}T12:00:00Z`);
+  opens.setUTCDate(opens.getUTCDate() - 1);
+  if (event.date && schoolToday < opens.toISOString().slice(0, 10)) {
+    return json({ error: 'You can send an excuse starting the day before the event.' }, 400);
+  }
+  const attended = (await findAttendance(env, user.organization_id, event.id, student.id)).find(
+    (record) => !record.excused,
   );
   if (attended) {
     return json({ error: 'You already have attendance recorded for that event.' }, 409);
@@ -1245,34 +1248,30 @@ async function reviewExcuse(request, admin, env, id) {
   }
   if (decision === 'approved') {
     // Approving records an excused absence for that student at that event.
-    const outcome = await mutateWorkspace(env, admin.organization_id, (state) => {
-      const event = (state.events ?? []).find((item) => item.id === row.event_id);
-      if (!event) return { error: 'That event no longer exists.', status: 404 };
-      state.attendance ??= [];
-      const existing = state.attendance.find(
-        (record) => record.eventId === row.event_id && record.studentId === row.student_id,
-      );
-      if (existing && !existing.excused) {
-        return { error: 'This student already has attendance for that event.', status: 409 };
-      }
-      if (!existing) {
-        state.attendance.push({
-          id: `ATT-EX-${crypto.randomUUID().slice(0, 8)}`,
-          eventId: row.event_id,
-          studentId: row.student_id,
-          timeIn: '',
-          timeOut: null,
-          durationMinutes: null,
-          status: 'Excused',
-          syncStatus: 'Synced',
-          manual: true,
-          excused: true,
-          recordedBy: admin.id,
-          recordedByName: admin.username,
-        });
-      }
-    });
-    if (outcome.error) return json({ error: outcome.error }, outcome.status ?? 500);
+    const state = await coreState(env, admin.organization_id);
+    if (!(state.events ?? []).some((item) => item.id === row.event_id)) {
+      return json({ error: 'That event no longer exists.' }, 404);
+    }
+    const existing = (await findAttendance(env, admin.organization_id, row.event_id, row.student_id))[0];
+    if (existing && !existing.excused) {
+      return json({ error: 'This student already has attendance for that event.' }, 409);
+    }
+    if (!existing) {
+      await writeAttendance(env, admin.organization_id, [{
+        id: `ATT-EX-${crypto.randomUUID().slice(0, 8)}`,
+        eventId: row.event_id,
+        studentId: row.student_id,
+        timeIn: '',
+        timeOut: null,
+        durationMinutes: null,
+        status: 'Excused',
+        syncStatus: 'Synced',
+        manual: true,
+        excused: true,
+        recordedBy: admin.id,
+        recordedByName: admin.username,
+      }], []);
+    }
   }
   await env.DB.prepare(
     `UPDATE excuse_requests
@@ -1460,7 +1459,6 @@ async function runPromotion(env, organizationId, today, endDate) {
       student.section = label(next);
     }
     state.students = (state.students ?? []).filter((student) => !graduateIds.has(student.id));
-    state.attendance = (state.attendance ?? []).filter((r) => !graduateIds.has(r.studentId));
     state.violations = (state.violations ?? []).filter((r) => !graduateIds.has(r.studentId));
     for (const event of state.events ?? []) {
       for (const seat of event.seats ?? []) {
@@ -1476,10 +1474,11 @@ async function runPromotion(env, organizationId, today, endDate) {
   });
   if (outcome.error) throw new Error(outcome.error);
 
-  // 3. Remove the graduates' accounts and requests.
+  // 3. Remove the graduates' accounts, attendance and requests.
   for (let index = 0; index < graduates.length; index += 50) {
     const chunk = graduates.slice(index, index + 50).map((student) => student.id);
     const marks = chunk.map(() => '?').join(', ');
+    await removeAttendanceWhere(env, organizationId, 'student_id', chunk);
     await env.DB.prepare(
       `DELETE FROM users WHERE organization_id = ? AND role = 'student' AND student_id IN (${marks})`,
     )
@@ -1561,8 +1560,21 @@ async function maybePromote(env, organizationId) {
 }
 
 async function runScheduled(env) {
+  try {
+    // Removal markers older than 180 days are no longer needed by any device.
+    await env.DB.prepare('DELETE FROM attendance_records WHERE deleted = 1 AND updated_at < ?')
+      .bind(new Date(Date.now() - 180 * 86400000).toISOString())
+      .run();
+  } catch (error) {
+    console.error('Attendance cleanup failed:', error);
+  }
   const { results } = await env.DB.prepare('SELECT id FROM organizations').all();
   for (const organization of results) {
+    try {
+      await closeAllOpenRecords(env, organization.id);
+    } catch (error) {
+      console.error('Closing open attendance failed:', error);
+    }
     try {
       await maybePromote(env, organization.id);
     } catch (error) {
@@ -1747,6 +1759,7 @@ async function resetSharedApp(user, env) {
   ];
   try {
     await env.DB.batch(statements);
+    await removeAttendanceWhere(env, user.organization_id, null, []);
     const updated = await env.DB.prepare(
       'SELECT revision FROM workspace_state WHERE organization_id = ?',
     )
@@ -1773,18 +1786,27 @@ function studentWorkspace(state, studentId) {
   if (!student) return emptyWorkspace();
   return {
     students: [student],
+    // A student only receives the events their own section is part of.
     events: state.events
-      .filter((event) => event.approvalStatus === 'approved')
-      .map((event) => ({
-        ...event,
-        seats: Array.isArray(event.seats)
-          ? event.seats.filter((seat) => seat.studentId === studentId)
-          : [],
-      })),
+      .filter(
+        (event) =>
+          event.approvalStatus === 'approved' && isStudentRequired(event, student),
+      )
+      .map((event) => {
+        const studentEvent = {
+          ...event,
+          seats: [],
+          expectedAttendeeCount: event.roster
+            ? new Set(Object.values(event.roster).flat()).size
+            : (state.students ?? []).filter((item) =>
+                isStudentRequired(event, item),
+              ).length,
+        };
+        delete studentEvent.seatingPlan;
+        return studentEvent;
+      }),
     // Students see only their own attendance records.
-    attendance: Array.isArray(state.attendance)
-      ? state.attendance.filter((record) => record.studentId === studentId)
-      : [],
+    attendance: [],
     violations: [],
     messages: [],
     syncItems: [],
@@ -1912,16 +1934,6 @@ async function validateOrganizerWorkspace(state, nextState, user, env) {
       createdByName: event.createdByName,
     });
   }
-  const approvedEventIds = new Set(
-    state.events
-      .filter((event) => event.approvalStatus === 'approved')
-      .map((event) => event.id),
-  );
-  if (
-    nextState.attendance.some((record) => !approvedEventIds.has(record.eventId))
-  ) {
-    return 'Attendance can only be recorded for approved events.';
-  }
   const previousMessages = new Map(state.messages.map((message) => [message.id, message]));
   const nextMessages = new Map(nextState.messages.map((message) => [message.id, message]));
   if (nextMessages.size !== nextState.messages.length) {
@@ -1996,13 +2008,6 @@ async function validateOrganizerWorkspace(state, nextState, user, env) {
       return 'An event refers to a section that is no longer available.';
     }
   }
-  // Remember which organizer recorded each new attendance entry.
-  const knownAttendance = new Set(state.attendance.map((record) => record.id));
-  nextState.attendance = nextState.attendance.map((record) =>
-    knownAttendance.has(record.id)
-      ? record
-      : { ...record, recordedBy: user.id, recordedByName: user.username },
-  );
   nextState.events = [
     ...state.events.map((event) => resubmitted.get(event.id) ?? event),
     ...additions.map((event) => ({
@@ -2015,7 +2020,432 @@ async function validateOrganizerWorkspace(state, nextState, user, env) {
   return null;
 }
 
+// ---------------- attendance (one row per record, synced in small steps) ----------------
+// Attendance is NOT stored inside the workspace JSON any more: that row has a size limit
+// and would stop saving after a few thousand check-ins. Apps ask for "everything after
+// cursor N" and send only the records they changed.
+const ATTENDANCE_PAGE = 3000;
+const ATTENDANCE_PUSH_MAX = 500;
+const ATTENDANCE_REMOVE_MAX = 2000;
+const MESSAGE_KEEP_DAYS = 14;
+const MESSAGE_KEEP_MAX = 1500;
+const SYNC_ITEMS_KEEP = 200;
+
+function plainRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validAttendanceShape(record) {
+  return (
+    plainRecord(record) &&
+    typeof record.id === 'string' && record.id.length > 0 && record.id.length <= 200 &&
+    typeof record.eventId === 'string' && record.eventId.length > 0 && record.eventId.length <= 200 &&
+    typeof record.studentId === 'string' && record.studentId.length > 0 && record.studentId.length <= 200 &&
+    JSON.stringify(record).length <= 4000
+  );
+}
+
+// Attendance rules the server enforces on every record it receives:
+//  - the event and the student must exist (and an organizer may only record at approved events);
+//  - a NEW check-in must fall on the event's day (Philippine time, until 6 AM the next
+//    morning for events that run past midnight) and must not be after the event was finished;
+//  - once an event is finished nobody can still be inside, so a record with no time-out is
+//    closed at the moment the event was finished.
+// Records that were valid when they were scanned are kept even if they sync much later.
+function checkAttendanceBatch(records, events, studentIds, knownIds, role) {
+  const accepted = [];
+  const dropped = [];
+  for (const record of records) {
+    if (!validAttendanceShape(record)) {
+      if (plainRecord(record) && typeof record.id === 'string') dropped.push(record.id);
+      continue;
+    }
+    const event = events.get(record.eventId);
+    if (!event || !studentIds.has(record.studentId)) {
+      dropped.push(record.id);
+      continue;
+    }
+    if (role === 'organizer' && (event.approvalStatus ?? 'approved') !== 'approved') {
+      dropped.push(record.id);
+      continue;
+    }
+    if (!knownIds.has(record.id) && record.timeIn && !record.excused) {
+      const at = Date.parse(record.timeIn);
+      const dayStart = Date.parse(`${event.date}T00:00:00+08:00`);
+      const insideEventDay = at >= dayStart && at < dayStart + 30 * 3600000;
+      const afterFinish = event.finishedAt && at > Date.parse(event.finishedAt);
+      if (!insideEventDay || afterFinish) {
+        dropped.push(record.id);
+        continue;
+      }
+    }
+    accepted.push(closeIfFinished(record, event));
+  }
+  return { accepted, dropped };
+}
+
+// When everyone still inside an event is checked out by itself:
+//  - the moment the admin finished it; otherwise
+//  - 11:59 PM of the event's day (Philippine time), once that day has passed.
+function eventClosedAt(event) {
+  if (event.finishedAt) return event.finishedAt;
+  const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+  return event.date && event.date < today
+    ? new Date(`${event.date}T23:59:00+08:00`).toISOString()
+    : null;
+}
+
+function closeIfFinished(record, event) {
+  const closeAt = eventClosedAt(event);
+  if (!closeAt || !record.timeIn || record.timeOut || record.excused) return record;
+  const timeOut = Date.parse(closeAt) < Date.parse(record.timeIn) ? record.timeIn : closeAt;
+  return {
+    ...record,
+    timeOut,
+    durationMinutes: Math.max(
+      0,
+      Math.round((Date.parse(timeOut) - Date.parse(record.timeIn)) / 60000),
+    ),
+  };
+}
+
+async function coreState(env, organizationId) {
+  const row = await env.DB.prepare(
+    'SELECT state_json FROM workspace_state WHERE organization_id = ?',
+  )
+    .bind(organizationId)
+    .first();
+  try {
+    return JSON.parse(row?.state_json ?? '{}');
+  } catch {
+    return {};
+  }
+}
+
+// Writes records and removals in one step and moves the cursor forward once.
+// At most ATTENDANCE_PUSH_MAX upserts per call so one cursor value never covers a huge group.
+async function writeAttendance(env, organizationId, upserts, removedIds) {
+  await env.DB.prepare(
+    'INSERT OR IGNORE INTO attendance_cursor (organization_id, value) VALUES (?, 0)',
+  )
+    .bind(organizationId)
+    .run();
+  const now = new Date().toISOString();
+  const statements = [
+    env.DB.prepare(
+      'UPDATE attendance_cursor SET value = value + 1 WHERE organization_id = ?',
+    ).bind(organizationId),
+  ];
+  if (upserts.length) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO attendance_records
+           (organization_id, id, event_id, student_id, data, deleted, seq, updated_at)
+         SELECT ?1, json_extract(v.value, '$.id'), json_extract(v.value, '$.eventId'),
+                json_extract(v.value, '$.studentId'), v.value, 0,
+                (SELECT value FROM attendance_cursor WHERE organization_id = ?1), ?2
+         FROM json_each(?3) v WHERE true
+         ON CONFLICT (organization_id, id) DO UPDATE SET
+           event_id = excluded.event_id, student_id = excluded.student_id,
+           data = excluded.data, deleted = 0, seq = excluded.seq,
+           updated_at = excluded.updated_at`,
+      ).bind(organizationId, now, JSON.stringify(upserts)),
+    );
+  }
+  if (removedIds.length) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE attendance_records
+         SET deleted = 1, updated_at = ?2,
+             seq = (SELECT value FROM attendance_cursor WHERE organization_id = ?1)
+         WHERE organization_id = ?1 AND deleted = 0
+           AND id IN (SELECT value FROM json_each(?3))`,
+      ).bind(organizationId, now, JSON.stringify(removedIds)),
+    );
+  }
+  await env.DB.batch(statements);
+}
+
+// Marks records as removed (never really deleted, so every device learns about it and an
+// accidental removal can still be recovered from the table for a while).
+// `column` is 'event_id', 'student_id', or null for every record of the school.
+async function removeAttendanceWhere(env, organizationId, column, values) {
+  await env.DB.prepare(
+    'INSERT OR IGNORE INTO attendance_cursor (organization_id, value) VALUES (?, 0)',
+  )
+    .bind(organizationId)
+    .run();
+  const now = new Date().toISOString();
+  const filter = column
+    ? `AND ${column === 'event_id' ? 'event_id' : 'student_id'} IN (SELECT value FROM json_each(?3))`
+    : '';
+  const statement = env.DB.prepare(
+    `UPDATE attendance_records
+     SET deleted = 1, updated_at = ?2,
+         seq = (SELECT value FROM attendance_cursor WHERE organization_id = ?1)
+     WHERE organization_id = ?1 AND deleted = 0 ${filter}`,
+  );
+  await env.DB.batch([
+    env.DB.prepare(
+      'UPDATE attendance_cursor SET value = value + 1 WHERE organization_id = ?',
+    ).bind(organizationId),
+    column
+      ? statement.bind(organizationId, now, JSON.stringify(values))
+      : statement.bind(organizationId, now),
+  ]);
+}
+
+async function liveAttendanceCount(env, organizationId, eventId) {
+  const row = await env.DB.prepare(
+    'SELECT COUNT(*) AS total FROM attendance_records WHERE organization_id = ? AND event_id = ? AND deleted = 0',
+  )
+    .bind(organizationId, eventId)
+    .first();
+  return row?.total ?? 0;
+}
+
+async function findAttendance(env, organizationId, eventId, studentId) {
+  const { results } = await env.DB.prepare(
+    `SELECT data FROM attendance_records
+     WHERE organization_id = ? AND event_id = ? AND student_id = ? AND deleted = 0`,
+  )
+    .bind(organizationId, eventId, studentId)
+    .all();
+  return results.map((row) => JSON.parse(row.data));
+}
+
+// Everyone still inside an event that has just been finished is checked out at that moment.
+async function closeOpenRecordsForEvents(env, organizationId, finishedEvents) {
+  for (const event of finishedEvents) {
+    const { results } = await env.DB.prepare(
+      `SELECT data FROM attendance_records
+       WHERE organization_id = ? AND event_id = ? AND deleted = 0
+         AND json_extract(data, '$.timeOut') IS NULL
+         AND COALESCE(json_extract(data, '$.timeIn'), '') <> ''
+         AND COALESCE(json_extract(data, '$.excused'), 0) = 0`,
+    )
+      .bind(organizationId, event.id)
+      .all();
+    const closed = results.map((row) => closeIfFinished(JSON.parse(row.data), event));
+    for (let index = 0; index < closed.length; index += ATTENDANCE_PUSH_MAX) {
+      await writeAttendance(env, organizationId, closed.slice(index, index + ATTENDANCE_PUSH_MAX), []);
+    }
+  }
+}
+
+// Checks out everyone still inside an event that is over (see eventClosedAt).
+async function closeAllOpenRecords(env, organizationId) {
+  const state = await coreState(env, organizationId);
+  const events = new Map((state.events ?? []).map((event) => [event.id, event]));
+  const { results } = await env.DB.prepare(
+    `SELECT data FROM attendance_records
+     WHERE organization_id = ? AND deleted = 0
+       AND json_extract(data, '$.timeOut') IS NULL
+       AND COALESCE(json_extract(data, '$.timeIn'), '') <> ''
+       AND COALESCE(json_extract(data, '$.excused'), 0) = 0`,
+  )
+    .bind(organizationId)
+    .all();
+  const closed = [];
+  for (const row of results) {
+    const record = JSON.parse(row.data);
+    const event = events.get(record.eventId);
+    if (!event) continue;
+    const after = closeIfFinished(record, event);
+    if (after !== record) closed.push(after);
+  }
+  for (let index = 0; index < closed.length; index += ATTENDANCE_PUSH_MAX) {
+    await writeAttendance(env, organizationId, closed.slice(index, index + ATTENDANCE_PUSH_MAX), []);
+  }
+  return closed.length;
+}
+
+// GET /api/attendance?after=N  ->  what changed since the app's cursor.
+async function listAttendance(url, user, env) {
+  const after = Math.max(0, Math.floor(Number(url.searchParams.get('after')) || 0));
+  const cursorRow = await env.DB.prepare(
+    'SELECT value FROM attendance_cursor WHERE organization_id = ?',
+  )
+    .bind(user.organization_id)
+    .first();
+  const latest = cursorRow?.value ?? 0;
+  // An app that is "ahead" of the server (for example the database was restored) starts over.
+  const reset = after > latest;
+  const from = reset ? 0 : after;
+  const onlyOwn = user.role === 'student';
+  const filter = onlyOwn ? 'AND student_id = ?' : '';
+  const bindings = onlyOwn
+    ? [user.organization_id, from, user.student_id ?? '', ATTENDANCE_PAGE + 1]
+    : [user.organization_id, from, ATTENDANCE_PAGE + 1];
+  const { results } = await env.DB.prepare(
+    `SELECT id, data, deleted, seq FROM attendance_records
+     WHERE organization_id = ? AND seq > ? ${filter}
+     ORDER BY seq, id LIMIT ?`,
+  )
+    .bind(...bindings)
+    .all();
+  let rows = results;
+  let more = false;
+  if (rows.length > ATTENDANCE_PAGE) {
+    more = true;
+    // Never split a group that shares one seq across two pages.
+    const edge = rows[ATTENDANCE_PAGE].seq;
+    const whole = rows.filter((row) => row.seq < edge);
+    if (whole.length > 0) {
+      rows = whole;
+    } else {
+      const group = await env.DB.prepare(
+        `SELECT id, data, deleted, seq FROM attendance_records
+         WHERE organization_id = ? AND seq = ? ${filter} ORDER BY id`,
+      )
+        .bind(...(onlyOwn ? [user.organization_id, edge, user.student_id ?? ''] : [user.organization_id, edge]))
+        .all();
+      rows = group.results;
+    }
+  }
+  const records = [];
+  const removed = [];
+  for (const row of rows) {
+    if (row.deleted) removed.push(row.id);
+    else records.push(JSON.parse(row.data));
+  }
+  const cursor = rows.length ? rows[rows.length - 1].seq : more ? from : latest;
+  return json({ cursor, records, removed, more, reset });
+}
+
+// PUT /api/attendance  { records: [...], removed: [ids] }
+async function saveAttendance(request, user, env) {
+  if (user.role !== 'super_admin' && user.role !== 'organizer') {
+    return json({ error: 'Only staff can record attendance.' }, 403);
+  }
+  const body = await readJson(request);
+  const records = Array.isArray(body?.records) ? body.records : [];
+  const removed = Array.isArray(body?.removed)
+    ? body.removed.filter((id) => typeof id === 'string' && id.length <= 200)
+    : [];
+  if (records.length > ATTENDANCE_PUSH_MAX || removed.length > ATTENDANCE_REMOVE_MAX) {
+    return json({ error: 'Send attendance in smaller groups.' }, 413);
+  }
+  const state = await coreState(env, user.organization_id);
+  const events = new Map((state.events ?? []).map((event) => [event.id, event]));
+  const studentIds = new Set((state.students ?? []).map((student) => student.id));
+  const ids = records.filter(validAttendanceShape).map((record) => record.id);
+  const existing = new Map();
+  if (ids.length) {
+    const { results } = await env.DB.prepare(
+      `SELECT id, data FROM attendance_records
+       WHERE organization_id = ? AND id IN (SELECT value FROM json_each(?))`,
+    )
+      .bind(user.organization_id, JSON.stringify(ids))
+      .all();
+    for (const row of results) existing.set(row.id, JSON.parse(row.data));
+  }
+  const { accepted, dropped } = checkAttendanceBatch(
+    records, events, studentIds, new Set(existing.keys()), user.role,
+  );
+  // Tell the app about anything the server changed, so both sides agree.
+  const sentById = new Map(records.filter(plainRecord).map((record) => [record.id, record]));
+  const adjusted = accepted.filter(
+    (record) => JSON.stringify(record) !== JSON.stringify(sentById.get(record.id)),
+  );
+  // Remember which organizer recorded each new entry.
+  const stamped = accepted.map((record) =>
+    user.role === 'organizer' && !existing.has(record.id)
+      ? { ...record, recordedBy: user.id, recordedByName: user.username }
+      : record,
+  );
+  await writeAttendance(env, user.organization_id, stamped, removed);
+  try {
+    const eventName = (id) => events.get(id)?.name ?? id;
+    const studentName = (id) => (state.students ?? []).find((s) => s.id === id)?.name ?? id;
+    for (const record of accepted.slice(0, 40)) {
+      const before = existing.get(record.id);
+      if (record.manual && (!before || !before.manual || before.excused !== record.excused)) {
+        await audit(env, user, record.excused ? 'attendance_excused' : 'attendance_manual',
+          record.excused
+            ? `Marked ${studentName(record.studentId)} excused for "${eventName(record.eventId)}"`
+            : `Checked ${studentName(record.studentId)} in/out by hand at "${eventName(record.eventId)}"`);
+      }
+    }
+    for (const id of removed.slice(0, 40)) {
+      const { results } = await env.DB.prepare(
+        'SELECT data FROM attendance_records WHERE organization_id = ? AND id = ?',
+      ).bind(user.organization_id, id).all();
+      const old = results[0] ? JSON.parse(results[0].data) : null;
+      if (old?.manual) {
+        await audit(env, user, 'attendance_undo',
+          `Undid a by-hand entry for ${studentName(old.studentId)} at "${eventName(old.eventId)}"`);
+      }
+    }
+  } catch {
+    // Logging must never block saving.
+  }
+  return json({ dropped, records: adjusted });
+}
+
+// Older app versions still send and expect attendance inside the workspace.
+async function legacyAttendanceInto(env, user, state, incoming) {
+  const events = new Map((state.events ?? []).map((event) => [event.id, event]));
+  const studentIds = new Set((state.students ?? []).map((student) => student.id));
+  const valid = incoming.filter(validAttendanceShape).slice(0, 20000);
+  for (let index = 0; index < valid.length; index += ATTENDANCE_PUSH_MAX) {
+    const chunk = valid.slice(index, index + ATTENDANCE_PUSH_MAX);
+    const { results } = await env.DB.prepare(
+      `SELECT id, data FROM attendance_records
+       WHERE organization_id = ? AND id IN (SELECT value FROM json_each(?))`,
+    )
+      .bind(user.organization_id, JSON.stringify(chunk.map((record) => record.id)))
+      .all();
+    const known = new Map(results.map((row) => [row.id, row.data]));
+    const { accepted } = checkAttendanceBatch(chunk, events, studentIds, new Set(known.keys()), user.role);
+    const changed = accepted.filter((record) => known.get(record.id) !== JSON.stringify(record));
+    if (changed.length) await writeAttendance(env, user.organization_id, changed, []);
+  }
+}
+
+async function legacyAttendanceFor(env, user) {
+  const onlyOwn = user.role === 'student';
+  const { results } = await env.DB.prepare(
+    `SELECT data FROM attendance_records
+     WHERE organization_id = ? AND deleted = 0 ${onlyOwn ? 'AND student_id = ?' : ''}`,
+  )
+    .bind(...(onlyOwn ? [user.organization_id, user.student_id ?? ''] : [user.organization_id]))
+    .all();
+  return results.map((row) => JSON.parse(row.data));
+}
+
+// Keeps the workspace row small: old sent texts and finished sync bookkeeping are dropped.
+function pruneWorkspace(state) {
+  const cutoff = Date.now() - MESSAGE_KEEP_DAYS * 86400000;
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  const queued = messages.filter((message) => message.status !== 'Sent');
+  const sent = messages
+    .filter((message) => message.status === 'Sent' && Date.parse(message.createdAt) >= cutoff)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, Math.max(0, MESSAGE_KEEP_MAX - queued.length));
+  const keep = new Set([...queued, ...sent]);
+  const syncItems = (Array.isArray(state.syncItems) ? state.syncItems : [])
+    .filter((item) => item.status === 'Pending sync')
+    .slice(-SYNC_ITEMS_KEEP);
+  // The seating feature was removed; its old seat lists made up most of the workspace row.
+  const events = (Array.isArray(state.events) ? state.events : []).map((event) => {
+    if (!event || (!event.seatingPlan && (!event.seats || event.seats.length === 0))) return event;
+    const { seatingPlan: _seatingPlan, ...rest } = event;
+    return { ...rest, seats: [] };
+  });
+  return {
+    ...state,
+    events,
+    attendance: [],
+    messages: messages.filter((message) => keep.has(message)),
+    syncItems,
+  };
+}
+
 async function workspace(request, user, env) {
+  // New apps ask for ?attendance=separate and sync attendance through /api/attendance.
+  // Older apps keep sending and receiving attendance inside the workspace.
+  const separate = new URL(request.url).searchParams.get('attendance') === 'separate';
   if (request.method === 'GET') {
     const row = await env.DB.prepare(
       'SELECT revision, state_json FROM workspace_state WHERE organization_id = ?',
@@ -2025,12 +2455,14 @@ async function workspace(request, user, env) {
     if (!row) return json({ error: 'The school workspace was not found.' }, 404);
     const state = JSON.parse(row.state_json);
     state.announcements ??= [];
+    state.attendance = [];
     if (!validWorkspaceState(state)) {
       return json({ error: 'The saved school workspace is invalid.' }, 500);
     }
+    const visible = user.role === 'student' ? studentWorkspace(state, user.student_id) : state;
     return json({
       revision: row.revision,
-      state: user.role === 'student' ? studentWorkspace(state, user.student_id) : state,
+      state: separate ? visible : { ...visible, attendance: await legacyAttendanceFor(env, user) },
     });
   }
 
@@ -2052,16 +2484,20 @@ async function workspace(request, user, env) {
     .bind(user.organization_id)
     .first();
   if (!current) return json({ error: 'The school workspace was not found.' }, 404);
+  let previousState;
+  try {
+    previousState = JSON.parse(current.state_json);
+  } catch {
+    return json({ error: 'The saved school workspace is invalid.' }, 500);
+  }
+  // Attendance never goes into the workspace row; old texts and finished bookkeeping are dropped.
+  const incomingAttendance = Array.isArray(body.state.attendance) ? body.state.attendance : [];
+  const cleaned = pruneWorkspace(body.state);
+  const messagesPruned = (body.state.messages ?? []).length !== cleaned.messages.length;
   if (user.role === 'organizer') {
-    let currentState;
-    try {
-      currentState = JSON.parse(current.state_json);
-    } catch {
-      return json({ error: 'The saved school workspace is invalid.' }, 500);
-    }
     const validationError = await validateOrganizerWorkspace(
-      currentState,
-      body.state,
+      pruneWorkspace(previousState),
+      cleaned,
       user,
       env,
     );
@@ -2074,31 +2510,46 @@ async function workspace(request, user, env) {
      WHERE organization_id = ? AND revision = ?`,
   )
     .bind(
-      JSON.stringify(body.state),
+      JSON.stringify(cleaned),
       new Date().toISOString(),
       user.organization_id,
       body.revision,
     )
     .run();
   if (result.meta.changes === 0) {
-    const current = await env.DB.prepare(
+    const latest = await env.DB.prepare(
       'SELECT revision, state_json FROM workspace_state WHERE organization_id = ?',
     )
       .bind(user.organization_id)
       .first();
-    if (!current) return json({ error: 'The school workspace was not found.' }, 404);
+    if (!latest) return json({ error: 'The school workspace was not found.' }, 404);
     return json(
-      { error: 'This workspace changed on another device.', revision: current.revision, state: JSON.parse(current.state_json) },
+      { error: 'This workspace changed on another device.', revision: latest.revision, state: JSON.parse(latest.state_json) },
       409,
     );
   }
   try {
-    const before = JSON.parse(current.state_json);
-    await auditWorkspaceChange(env, user, before, body.state);
+    // Events the admin has just finished: everyone still inside is checked out.
+    const wasFinished = new Set(
+      (previousState.events ?? []).filter((event) => event.finishedAt).map((event) => event.id),
+    );
+    const justFinished = (cleaned.events ?? []).filter(
+      (event) => event.finishedAt && !wasFinished.has(event.id),
+    );
+    if (justFinished.length) await closeOpenRecordsForEvents(env, user.organization_id, justFinished);
+    if (!separate && incomingAttendance.length) {
+      await legacyAttendanceInto(env, user, cleaned, incomingAttendance);
+    }
+  } catch (error) {
+    console.error('Attendance follow-up failed:', error);
+  }
+  try {
+    await auditWorkspaceChange(env, user, previousState, cleaned);
   } catch {
     // Logging must never block saving.
   }
-  return json({ revision: body.revision + 1 });
+  // `refresh` tells the app the server trimmed something, so it should reload.
+  return json({ revision: body.revision + 1, refresh: messagesPruned });
 }
 
 async function listSections(user, env) {
@@ -2299,6 +2750,12 @@ async function handle(request, env) {
   }
   if (request.method === 'DELETE' && path === '/api/admin/reset') {
     return resetSharedApp(user, env);
+  }
+  if (path === '/api/attendance' && request.method === 'GET') {
+    return listAttendance(url, user, env);
+  }
+  if (path === '/api/attendance' && request.method === 'PUT') {
+    return saveAttendance(request, user, env);
   }
   if (path === '/api/workspace' && ['GET', 'PUT'].includes(request.method)) {
     return workspace(request, user, env);

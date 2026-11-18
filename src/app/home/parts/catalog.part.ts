@@ -1,17 +1,32 @@
-import { signal } from '@angular/core';
+import { computed, signal } from '@angular/core';
 import { SchoolSection } from '../../core/services/workspace-api.service';
-import { EventSeatingPlan, SchoolEvent, SeatBlock } from '../../core/models/school-event.models';
+import { SchoolEvent } from '../../core/models/school-event.models';
+import { schoolDateKey } from '../../core/services/time-format';
 import { HomeBaseDirective } from './home-base.directive';
-import { emptySeatingPlan } from '../home.types';
 
-/** Sections, the event form and seat layout editor, and the audience pickers. */
+interface EventSectionScope {
+  key: string;
+  label: string;
+  sectionIds: string[];
+}
+
+/** One tag in the "Who is attending?" box: a whole group, or a single section. */
+export interface EventSectionChip {
+  key: string;
+  label: string;
+  title: string;
+  sectionIds: string[];
+}
+
+/** Sections, event setup, and audience pickers. */
 export abstract class CatalogPart extends HomeBaseDirective {
   readonly selectedEventRequiredSections = signal<string[]>([]);
   readonly sectionError = signal<string | null>(null);
   readonly sectionsLoading = signal(false);
+  readonly eventSectionPickerOpen = signal(false);
+  eventSectionSearch = '';
   readonly eventError = signal<string | null>(null);
   readonly eventDatePickerOpen = signal(false);
-  signupSectionGroup = { course: 'BSIT', yearLevel: '', sectionIds: [] as string[] };
   sectionForm = { course: 'BSIT', yearLevel: '1st Year', name: '' };
   editingSectionId = '';
   announcementForm = { title: '', body: '' };
@@ -31,85 +46,102 @@ export abstract class CatalogPart extends HomeBaseDirective {
     graceMinutes: 15,
     requiredSections: [] as string[],
   };
-  eventSeatingPlan = emptySeatingPlan();
   get minimumEventDate(): string {
-    const today = new Date();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${today.getFullYear()}-${month}-${day}`;
+    return schoolDateKey();
   }
   readonly editingEventId = signal<string | null>(null);
-  eventGroupYears(): string[] {
-    const years = [...new Set(
-      this.schoolSections()
-        .filter((section) => section.course === this.signupSectionGroup.course)
-        .map((section) => section.yearLevel),
-    )].sort(
-      (left, right) =>
-        this.yearLevels.indexOf(left) - this.yearLevels.indexOf(right),
-    );
-    return years.length ? ['All years', ...years] : [];
-  }
   availableCourses(): string[] {
     const sectionCourses = [
       ...new Set(this.schoolSections().map((section) => section.course)),
     ].sort();
     return sectionCourses.length ? sectionCourses : this.courses;
   }
-  eventGroupSections(): SchoolSection[] {
+  readonly eventSectionScopes = computed<EventSectionScope[]>(() => {
+    const sections = this.schoolSections();
+    const courses = [...new Set(sections.map((section) => section.course))].sort();
+    const years = [...new Set(sections.map((section) => section.yearLevel))].sort(
+      (left, right) =>
+        this.yearLevels.indexOf(left) - this.yearLevels.indexOf(right) ||
+        left.localeCompare(right),
+    );
+    const scope = (key: string, label: string, matching: SchoolSection[]) => ({
+      key,
+      label,
+      sectionIds: matching.map((section) => section.id),
+    });
+    return [
+      scope('all', 'All Years & Levels', sections),
+      ...courses.map((course) =>
+        scope(
+          `course:${course}`,
+          `All ${course}`,
+          sections.filter((section) => section.course === course),
+        ),
+      ),
+      ...years.map((year) =>
+        scope(
+          `year:${year}`,
+          `All ${year}`,
+          sections.filter((section) => section.yearLevel === year),
+        ),
+      ),
+      ...courses.flatMap((course) =>
+        years
+          .filter((year) =>
+            sections.some(
+              (section) => section.course === course && section.yearLevel === year,
+            ),
+          )
+          .map((year) =>
+            scope(
+              `course-year:${course}:${year}`,
+              `All ${course} ${year}`,
+              sections.filter(
+                (section) =>
+                  section.course === course && section.yearLevel === year,
+              ),
+            ),
+          ),
+      ),
+    ];
+  });
+  filteredEventSectionScopes(): EventSectionScope[] {
+    const query = this.eventSectionSearch.trim().toLowerCase();
+    return this.eventSectionScopes().filter(
+      (scope) => !query || scope.label.toLowerCase().includes(query),
+    );
+  }
+  filteredEventSections(): SchoolSection[] {
+    const query = this.eventSectionSearch.trim().toLowerCase();
     return this.schoolSections().filter(
       (section) =>
-        section.course === this.signupSectionGroup.course &&
-        (this.signupSectionGroup.yearLevel === 'All years' ||
-          section.yearLevel === this.signupSectionGroup.yearLevel),
+        !query || this.sectionLabel(section).toLowerCase().includes(query),
     );
   }
-  eventGroupCourseChanged(): void {
-    this.signupSectionGroup.yearLevel = this.eventGroupYears()[0] ?? '';
-    this.signupSectionGroup.sectionIds = [];
-    this.syncEventGroupSections();
-  }
-  eventGroupYearChanged(): void {
-    this.signupSectionGroup.sectionIds = [];
-    this.syncEventGroupSections();
-  }
-  protected syncEventGroupSections(): void {
-    const options = this.eventGroupSections();
-    if (options.length === 1) {
-      this.signupSectionGroup.sectionIds = [options[0].id];
-    } else {
-      this.signupSectionGroup.sectionIds =
-        this.signupSectionGroup.sectionIds.filter((id) =>
-          options.some((section) => section.id === id),
-        );
+  updateEventSectionSearch(event: Event): void {
+    if (event.target instanceof HTMLInputElement) {
+      this.eventSectionSearch = event.target.value;
     }
   }
-  toggleEventGroupSection(sectionId: string, selected: boolean): void {
-    const current = new Set(this.signupSectionGroup.sectionIds);
-    if (selected) current.add(sectionId);
-    else current.delete(sectionId);
-    this.signupSectionGroup.sectionIds = [...current];
+  toggleEventSectionPicker(): void {
+    this.eventSectionPickerOpen.update((open) => !open);
   }
-  setEventGroupSection(event: Event, sectionId: string): void {
-    if (!(event.target instanceof HTMLInputElement)) return;
-    this.toggleEventGroupSection(sectionId, event.target.checked);
+  closeEventSectionPicker(): void {
+    this.eventSectionPickerOpen.set(false);
+    this.eventSectionSearch = '';
   }
-  selectAllEventGroupSections(): void {
-    this.signupSectionGroup.sectionIds = this.eventGroupSections().map(
-      (section) => section.id,
-    );
+  closeEventSectionPickerOnBlur(event: FocusEvent): void {
+    const container = event.currentTarget;
+    const nextTarget = event.relatedTarget;
+    if (
+      container instanceof HTMLElement &&
+      (!(nextTarget instanceof Node) || !container.contains(nextTarget))
+    ) {
+      this.closeEventSectionPicker();
+    }
   }
-  addEventSectionGroup(): void {
-    const sections = this.eventGroupSections();
-    const selected = this.signupSectionGroup.sectionIds;
-    if (!selected.length) return;
-    const validIds = new Set(sections.map((section) => section.id));
-    const next = new Set(this.selectedEventRequiredSections());
-    selected.forEach((id) => {
-      if (validIds.has(id)) next.add(id);
-    });
-    this.selectedEventRequiredSections.set([...next]);
-    this.signupSectionGroup.sectionIds = [];
+  private resetEventSectionPicker(): void {
+    this.closeEventSectionPicker();
   }
   requiredSectionLabel(id: string): string {
     const section = this.schoolSections().find((item) => item.id === id);
@@ -118,22 +150,73 @@ export abstract class CatalogPart extends HomeBaseDirective {
       : id;
   }
   removeRequiredSection(id: string): void {
+    this.removeRequiredSections([id]);
+  }
+  private removeRequiredSections(sectionIds: string[]): void {
+    const removed = new Set(sectionIds);
     this.selectedEventRequiredSections.update((sections) =>
-      sections.filter((sectionId) => sectionId !== id),
+      sections.filter((sectionId) => !removed.has(sectionId)),
     );
-    this.eventSeatingPlan.gymnasiumBenchGroups =
-      this.eventSeatingPlan.gymnasiumBenchGroups.map((group) =>
-        group.sectionId === id ? { ...group, sectionId: null } : group,
-      );
-    this.eventSeatingPlan.sharedSectionIds =
-      (this.eventSeatingPlan.sharedSectionIds ?? []).filter(
-        (sectionId) => sectionId !== id,
-      );
-    delete this.eventSeatingPlan.sectionSeatCounts[id];
+  }
+  /**
+   * What the box shows for the chosen sections. When a whole group is chosen
+   * ("All Years & Levels", "All BSIT", "All BSIT 4th Year"…) it shows that one group,
+   * not every section in it. Sections not covered by a group show one by one.
+   */
+  readonly eventSectionChips = computed<EventSectionChip[]>(() => {
+    const selected = new Set(this.selectedEventRequiredSections());
+    const covered = new Set<string>();
+    const chips: EventSectionChip[] = [];
+    const wholeGroups = this.eventSectionScopes()
+      .filter(
+        (scope) =>
+          scope.sectionIds.length > 1 && scope.sectionIds.every((id) => selected.has(id)),
+      )
+      // The biggest group first, so "All Years & Levels" replaces everything inside it.
+      .sort((left, right) => right.sectionIds.length - left.sectionIds.length);
+    for (const scope of wholeGroups) {
+      // A group is worth a tag only if it adds at least two sections not already shown;
+      // otherwise the one leftover section is clearer on its own.
+      const added = scope.sectionIds.filter((id) => !covered.has(id));
+      if (added.length < 2) continue;
+      scope.sectionIds.forEach((id) => covered.add(id));
+      chips.push({
+        key: scope.key,
+        label: scope.label,
+        title: `${scope.sectionIds.length} sections`,
+        sectionIds: scope.sectionIds,
+      });
+    }
+    for (const section of this.schoolSections()) {
+      if (selected.has(section.id) && !covered.has(section.id)) {
+        chips.push({
+          key: section.id,
+          label: this.sectionLabel(section),
+          title: this.sectionLabel(section),
+          sectionIds: [section.id],
+        });
+      }
+    }
+    return chips;
+  });
+  /** Removing a group's tag removes every section in that group. */
+  removeEventSectionChip(chip: EventSectionChip): void {
+    this.removeRequiredSections(chip.sectionIds);
   }
   eventSectionChoices(): SchoolSection[] {
     const selected = new Set(this.selectedEventRequiredSections());
     return this.schoolSections().filter((section) => selected.has(section.id));
+  }
+  selectedEventAttendeeCount(): number {
+    const sectionIds = new Set(this.selectedEventRequiredSections());
+    const sectionLabels = new Set(
+      this.eventSectionChoices().map((section) => this.sectionLabel(section)),
+    );
+    return this.state().students.filter(
+      (student) =>
+        sectionIds.has(student.sectionId ?? '') ||
+        sectionLabels.has(student.section),
+    ).length;
   }
   eventSectionChoicesForEvent(event: SchoolEvent): SchoolSection[] {
     const required = new Set(event.requiredSections ?? []);
@@ -165,95 +248,27 @@ export abstract class CatalogPart extends HomeBaseDirective {
   sectionLabel(section: SchoolSection): string {
     return `${section.course} ${section.yearLevel} ${section.name}`;
   }
-  protected blocks(): SeatBlock[] {
-    const plan = this.eventSeatingPlan;
-    plan.blocks ??= [{ rows: plan.rows ?? 0, seatsPerRow: plan.seatsPerRow ?? 10 }];
-    return plan.blocks;
-  }
-  previewCols(): number {
-    return this.seatBlocks()
-      .filter((block) => block.rows > 0)
-      .reduce((total, block) => total + block.seatsPerRow, 0);
-  }
-  previewBlockCount(): number {
-    return Math.max(1, this.seatBlocks().filter((block) => block.rows > 0).length);
-  }
-  eventCols(event: SchoolEvent): number {
-    const blocks = event.seatingPlan?.blocks?.filter((block) => block.rows > 0);
-    if (blocks?.length) {
-      return blocks.reduce((total, block) => total + block.seatsPerRow, 0);
-    }
-    return event.seatingPlan?.seatsPerRow || 10;
-  }
-  seatBlocks(): SeatBlock[] {
-    return this.blocks();
-  }
-  protected recalcSeatTotal(): void {
-    const blocks = this.blocks();
-    this.eventSeatingPlan.sharedSeatCount = blocks.reduce(
-      (total, block) => total + block.rows * block.seatsPerRow,
-      0,
-    );
-    this.eventSeatingPlan.rows = blocks[0]?.rows ?? 0;
-    this.eventSeatingPlan.seatsPerRow = blocks[0]?.seatsPerRow ?? 10;
-  }
-  stepBlockRows(index: number, delta: number): void {
-    const block = this.blocks()[index];
-    if (!block) return;
-    block.rows = Math.min(50, Math.max(0, block.rows + delta));
-    this.recalcSeatTotal();
-  }
-  stepBlockSeats(index: number, delta: number): void {
-    const block = this.blocks()[index];
-    if (!block) return;
-    block.seatsPerRow = Math.min(50, Math.max(1, block.seatsPerRow + delta));
-    this.recalcSeatTotal();
-  }
-  addSeatBlock(): void {
-    if (this.blocks().length >= 2) return;
-    this.blocks().push({ rows: 10, seatsPerRow: 10 });
-    this.recalcSeatTotal();
-  }
-  removeSeatBlock(index: number): void {
-    if (this.blocks().length <= 1) return;
-    const [removed] = this.blocks().splice(index, 1);
-    this.recalcSeatTotal();
-    this.showToast(`Line ${index + 1} removed`, 'warning', () => {
-      this.blocks().splice(index, 0, removed);
-      this.recalcSeatTotal();
-    });
-  }
   isRequiredSelected(id: string): boolean {
     return this.selectedEventRequiredSections().includes(id);
+  }
+  isEventSectionScopeSelected(scope: EventSectionScope): boolean {
+    return (
+      scope.sectionIds.length > 0 &&
+      scope.sectionIds.every((id) => this.isRequiredSelected(id))
+    );
+  }
+  toggleEventSectionScope(scope: EventSectionScope): void {
+    if (this.isEventSectionScopeSelected(scope)) {
+      this.removeRequiredSections(scope.sectionIds);
+      return;
+    }
+    this.selectedEventRequiredSections.update((ids) => [
+      ...new Set([...ids, ...scope.sectionIds]),
+    ]);
   }
   toggleRequiredSection(id: string): void {
     if (this.isRequiredSelected(id)) this.removeRequiredSection(id);
     else this.selectedEventRequiredSections.update((ids) => [...ids, id]);
-  }
-  allGroupSectionsSelected(): boolean {
-    const sections = this.eventGroupSections();
-    return sections.length > 0 && sections.every((s) => this.isRequiredSelected(s.id));
-  }
-  toggleAllGroupSections(): void {
-    const sections = this.eventGroupSections();
-    if (this.allGroupSectionsSelected()) {
-      sections.forEach((s) => this.removeRequiredSection(s.id));
-    } else {
-      this.selectedEventRequiredSections.update((ids) => [
-        ...ids,
-        ...sections.map((s) => s.id).filter((id) => !ids.includes(id)),
-      ]);
-    }
-  }
-  updateSeatLayout(rows: number | null, seatsPerRow: number | null): void {
-    const rowCount = Math.max(0, Math.floor(Number(rows) || 0));
-    const perRow = Math.max(0, Math.floor(Number(seatsPerRow) || 0));
-    this.eventSeatingPlan.rows = rowCount;
-    this.eventSeatingPlan.seatsPerRow = perRow;
-    this.eventSeatingPlan.sharedSeatCount = rowCount * perRow;
-  }
-  range(count: number): number[] {
-    return Array.from({ length: Math.max(0, Math.min(50, count || 0)) }, (_, i) => i);
   }
   async loadSections(): Promise<void> {
     this.sectionsLoading.set(true);
@@ -263,7 +278,6 @@ export abstract class CatalogPart extends HomeBaseDirective {
         this.auth.getToken() || undefined,
       );
       this.schoolSections.set(sections);
-      this.hydrateEventSeatingPlan();
       if (!this.availableCourses().includes(this.announcementCourse)) {
         this.announcementCourse = this.availableCourses()[0] ?? this.courses[0];
       }
@@ -273,40 +287,11 @@ export abstract class CatalogPart extends HomeBaseDirective {
         this.announcementYearLevel = this.announcementYears()[0] ?? '';
       }
       this.announcementYearChanged();
-      if (!this.eventGroupYears().length) {
-        this.signupSectionGroup.course =
-          this.availableCourses().find((course) =>
-            this.schoolSections().some((section) => section.course === course),
-          ) ?? this.availableCourses()[0];
-      }
-      if (this.signupSectionGroup.course && this.eventGroupYears().length) {
-        if (!this.eventGroupYears().includes(this.signupSectionGroup.yearLevel)) {
-          this.signupSectionGroup.yearLevel = this.eventGroupYears()[0];
-        }
-        this.syncEventGroupSections();
-      } else {
-        this.signupSectionGroup.yearLevel = '';
-        this.signupSectionGroup.sectionIds = [];
-      }
     } catch (error) {
       this.sectionError.set(this.workspaceApi.errorMessage(error));
     } finally {
       this.sectionsLoading.set(false);
     }
-  }
-  protected hydrateEventSeatingPlan(): void {
-    const eventId = this.editingEventId();
-    const event = this.state().events.find((item) => item.id === eventId);
-    if (!event || event.seatingPlan) return;
-
-    this.eventSeatingPlan = {
-      ...emptySeatingPlan(),
-      sharedSeatCount: event.seats.length,
-      rows: Math.ceil(event.seats.length / 10),
-      seatsPerRow: 10,
-      blocks: [{ rows: Math.ceil(event.seats.length / 10), seatsPerRow: 10 }],
-      sharedSectionIds: event.requiredSections ?? [],
-    };
   }
   sectionGroups(): {
     course: string;
@@ -453,7 +438,7 @@ export abstract class CatalogPart extends HomeBaseDirective {
   }
   createEvent(): void {
     this.editingEventId.set(null);
-    this.eventSeatingPlan = emptySeatingPlan();
+    this.resetEventSectionPicker();
     this.eventForm = {
       name: '',
       date: '',
@@ -466,9 +451,6 @@ export abstract class CatalogPart extends HomeBaseDirective {
     };
     this.selectedEventRequiredSections.set([]);
     this.eventError.set(null);
-    this.signupSectionGroup.course = this.courses[0];
-    this.signupSectionGroup.yearLevel = '';
-    this.signupSectionGroup.sectionIds = [];
     this.go('create-event');
   }
   editEvent(): void {
@@ -482,6 +464,7 @@ export abstract class CatalogPart extends HomeBaseDirective {
       return false;
     }
     this.editingEventId.set(event.id);
+    this.resetEventSectionPicker();
     this.eventError.set(null);
     this.eventForm = {
       name: event.name,
@@ -495,38 +478,6 @@ export abstract class CatalogPart extends HomeBaseDirective {
       requiredSections: event.requiredSections ?? [],
     };
     this.selectedEventRequiredSections.set(event.requiredSections ?? []);
-    this.eventSeatingPlan = event.seatingPlan
-      ? structuredClone(event.seatingPlan)
-      : emptySeatingPlan();
-    if (event.seatingPlan) {
-      const seatingPlan = this.eventSeatingPlan;
-      if (seatingPlan.sharedSeatCount === undefined) {
-        const legacyCounts = seatingPlan.sectionSeatCounts ?? {};
-        seatingPlan.sharedSeatCount = Object.values(legacyCounts).reduce(
-          (total, count) => total + count,
-          0,
-        );
-        seatingPlan.sharedSectionIds = Object.entries(legacyCounts)
-          .filter(([, count]) => count > 0)
-          .map(([sectionId]) => sectionId);
-      }
-      seatingPlan.sharedSectionIds ??= [];
-      seatingPlan.sectionSeatCounts ??= {};
-      if (!seatingPlan.seatsPerRow) {
-        seatingPlan.seatsPerRow = 10;
-      }
-      if (!seatingPlan.blocks?.length) {
-        const perRow = seatingPlan.seatsPerRow ?? 10;
-        const rows = Math.ceil((seatingPlan.sharedSeatCount ?? 0) / perRow);
-        seatingPlan.blocks = [{ rows, seatsPerRow: perRow }];
-      }
-      if (seatingPlan.rows === undefined) {
-        seatingPlan.rows = Math.ceil(
-          (seatingPlan.sharedSeatCount ?? 0) / seatingPlan.seatsPerRow,
-        );
-        seatingPlan.sharedSeatCount = seatingPlan.rows * seatingPlan.seatsPerRow;
-      }
-    }
     return true;
   }
   saveEvent(): void {
@@ -559,6 +510,18 @@ export abstract class CatalogPart extends HomeBaseDirective {
       );
       return;
     }
+    if (!this.eventForm.name.trim()) {
+      this.eventError.set('Enter the event name.');
+      return;
+    }
+    if (!this.eventForm.startTime || !this.eventForm.endTime) {
+      this.eventError.set('Set when the event starts and ends.');
+      return;
+    }
+    if (this.eventForm.endTime <= this.eventForm.startTime) {
+      this.eventError.set('The end time must be after the start time.');
+      return;
+    }
     const graceMinutes = Number(this.eventForm.graceMinutes);
     if (
       !Number.isInteger(graceMinutes) ||
@@ -586,53 +549,12 @@ export abstract class CatalogPart extends HomeBaseDirective {
       this.eventError.set('Wait for the section list to load, then try again.');
       return;
     }
-    const sharedSectionIds = [...this.selectedEventRequiredSections()];
-    const seatBlocks = this.seatBlocks().map((block) => ({
-      rows: Number(block.rows),
-      seatsPerRow: Number(block.seatsPerRow),
-    }));
-    const seatingPlan: EventSeatingPlan = {
-      gymnasiumBenchGroups: [],
-      blocks: seatBlocks.filter((block) => block.rows > 0),
-      sharedSeatCount: seatBlocks.reduce(
-        (total, block) => total + block.rows * block.seatsPerRow,
-        0,
-      ),
-      rows: this.eventSeatingPlan.rows ?? 0,
-      seatsPerRow: this.eventSeatingPlan.seatsPerRow ?? 10,
-      sharedSectionIds,
-      sectionSeatCounts: {},
-    };
-    const sharedSeatCount = seatingPlan.sharedSeatCount ?? 0;
-    if (
-      seatBlocks.some(
-        (block) =>
-          !Number.isInteger(block.rows) ||
-          !Number.isInteger(block.seatsPerRow) ||
-          block.rows < 0 ||
-          block.rows > 50 ||
-          block.seatsPerRow < 1 ||
-          block.seatsPerRow > 50,
-      )
-    ) {
-      this.eventError.set('Rows and chairs per row must be whole numbers from 0 to 50.');
-      return;
-    }
-    if (sharedSeatCount > 500) {
-      this.eventError.set('The total number of chairs cannot be more than 500.');
-      return;
-    }
-    if (sharedSeatCount === 0) {
-      this.eventError.set('Add at least one row of chairs for the attendees.');
-      return;
-    }
     this.eventError.set(null);
     const saved = this.events.save(
       {
         ...this.eventForm,
         graceMinutes,
         requiredSections: this.selectedEventRequiredSections(),
-        seatingPlan,
       },
       editingEventId ?? undefined,
       selectedSectionLabels.map((label, index) => ({

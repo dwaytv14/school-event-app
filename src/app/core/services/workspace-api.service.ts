@@ -2,7 +2,7 @@ import { inject, Injectable, signal } from '@angular/core';
 import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { environment } from '../../../environments/environment';
-import { AppState, UserRole } from '../models/school-event.models';
+import { AppState, AttendanceRecord, UserRole } from '../models/school-event.models';
 
 const API_URL_STORAGE_KEY = 'school-event-api-url-v2';
 
@@ -18,6 +18,22 @@ export interface WorkspaceSnapshot {
     | 'syncItems'
     | 'announcements'
   >;
+}
+
+/** One step of the attendance sync: what changed on the server after the app's cursor. */
+export interface AttendancePage {
+  cursor: number;
+  records: AttendanceRecord[];
+  removed: string[];
+  more: boolean;
+  reset: boolean;
+}
+
+export interface AttendancePushResult {
+  /** Records the server refused (for example a check-in outside the event day). */
+  dropped: string[];
+  /** Records the server adjusted (for example closed because the event was finished). */
+  records: AttendanceRecord[];
 }
 
 export interface AuthenticationResponse {
@@ -93,6 +109,10 @@ export interface SchoolSection {
 export interface StudentRegistration {
   studentNumber: string;
   name: string;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  extension?: string;
   course: string;
   yearLevel: string;
   section: string;
@@ -161,7 +181,26 @@ export class WorkspaceApiService {
 
   loadWorkspace(token: string): Promise<WorkspaceSnapshot> {
     return firstValueFrom(
-      this.http.get<WorkspaceSnapshot>(`${this.baseUrl()}/workspace`, {
+      this.http.get<WorkspaceSnapshot>(`${this.baseUrl()}/workspace?attendance=separate`, {
+        headers: this.authorization(token),
+      }),
+    );
+  }
+
+  loadAttendance(token: string, after: number): Promise<AttendancePage> {
+    return firstValueFrom(
+      this.http.get<AttendancePage>(`${this.baseUrl()}/attendance?after=${after}`, {
+        headers: this.authorization(token),
+      }),
+    );
+  }
+
+  saveAttendance(
+    token: string,
+    body: { records: AttendanceRecord[]; removed: string[] },
+  ): Promise<AttendancePushResult> {
+    return firstValueFrom(
+      this.http.put<AttendancePushResult>(`${this.baseUrl()}/attendance`, body, {
         headers: this.authorization(token),
       }),
     );
@@ -170,11 +209,12 @@ export class WorkspaceApiService {
   saveWorkspace(
     token: string,
     snapshot: WorkspaceSnapshot,
-  ): Promise<{ revision: number }> {
+  ): Promise<{ revision: number; refresh?: boolean }> {
     return firstValueFrom(
-      this.http.put<{ revision: number }>(
-        `${this.baseUrl()}/workspace`,
-        snapshot,
+      this.http.put<{ revision: number; refresh?: boolean }>(
+        `${this.baseUrl()}/workspace?attendance=separate`,
+        // Attendance has its own sync; it never goes inside the workspace.
+        { ...snapshot, state: { ...snapshot.state, attendance: [] } },
         { headers: this.authorization(token) },
       ),
     );

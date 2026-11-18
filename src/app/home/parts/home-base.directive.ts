@@ -1,13 +1,16 @@
 import {
+  DestroyRef,
   ElementRef,
   inject,
   ViewChild,
   computed,
   signal,
 } from '@angular/core';
-import { eventActions } from '../../core/services/event-actions';
+import { isStudentRequired } from '../../core/services/event-roster';
+import { clock12, dateTimeLabel, schoolDateKey, timeOfDay } from '../../core/services/time-format';
+import { eventActions, isEventOver, isEventUpcoming } from '../../core/services/event-actions';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AlertController, LoadingController, ToastController } from '@ionic/angular';
+import { AlertController, LoadingController } from '@ionic/angular';
 import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import { ProfilePhotoService } from '../../core/services/profile-photo.service';
 import { BrowserMultiFormatReader, IScannerControls } from '@zxing/browser';
@@ -21,7 +24,6 @@ import { AttendanceReportService } from '../../core/services/attendance-report.s
 import { DemoStoreService } from '../../core/services/demo-store.service';
 import { EventService } from '../../core/services/event.service';
 import { OfflineSyncService } from '../../core/services/offline-sync.service';
-import { SeatingService } from '../../core/services/seating.service';
 import { SmsService } from '../../core/services/sms.service';
 import { WorkspaceSyncService } from '../../core/services/workspace-sync.service';
 import { WorkspaceApiService, SchoolSection } from '../../core/services/workspace-api.service';
@@ -40,7 +42,6 @@ export abstract class HomeBaseDirective {
   protected readonly store = inject(DemoStoreService);
   readonly events = inject(EventService);
   readonly attendance = inject(AttendanceService);
-  readonly seating = inject(SeatingService);
   readonly sms = inject(SmsService);
   readonly bulkSms = inject(BulkSmsService);
   protected readonly nativeSms = inject(NativeSmsService);
@@ -52,7 +53,6 @@ export abstract class HomeBaseDirective {
   readonly auth = inject(AuthService);
   readonly workspaceSync = inject(WorkspaceSyncService);
   protected readonly workspaceApi = inject(WorkspaceApiService);
-  protected readonly toastCtrl = inject(ToastController);
   protected readonly loadingCtrl = inject(LoadingController);
   protected readonly alertCtrl = inject(AlertController);
   readonly state = this.store.state;
@@ -64,14 +64,136 @@ export abstract class HomeBaseDirective {
   readonly pendingEvents = computed(() =>
     this.state().events.filter((event) => event.approvalStatus === 'pending'),
   );
-  readonly activeEvent = computed(
-    () =>
-      this.state().events.find(
-        (item) => item.id === this.state().selectedEventId,
-      ) ?? this.state().events[0],
-  );
+  /**
+   * The events this person should see listed. Students only see events their
+   * section is part of; admins and organizers see everything.
+   */
+  readonly myEvents = computed(() => {
+    this.schoolDay(); // a finished day moves its events into the past
+    const events = this.state().events;
+    if (this.auth.role() !== 'student') return events;
+    const student = this.activeStudent();
+    // Past events a student went to (checked in), by event id.
+    const attended = new Set(
+      this.state()
+        .attendance.filter(
+          (record) => record.studentId === student.id && !!record.timeIn && !record.excused,
+        )
+        .map((record) => record.eventId),
+    );
+    return events.filter((event) => {
+      if (!isEventOver(event)) return isStudentRequired(event, student);
+      // Once an event is over, keep it only if the student went and it was not cancelled.
+      return !event.cancelled && attended.has(event.id);
+    });
+  });
+  /**
+   * Today's date in the Philippines. Many values depend on "today"; reading this
+   * inside them makes them recompute when midnight passes, even if the app was
+   * left open and nothing else changed.
+   */
+  readonly schoolDay = signal(schoolDateKey());
+  private readonly dayWatcher = (() => {
+    const check = (): void => {
+      const today = schoolDateKey();
+      if (today !== this.schoolDay()) this.schoolDay.set(today);
+    };
+    const timer = setInterval(check, 30_000);
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') check();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    inject(DestroyRef).onDestroy(() => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    });
+  })();
+  /** True once the event is over (finished, or its day has passed). */
+  isEventPast(event: SchoolEvent): boolean {
+    return isEventOver(event);
+  }
+  /** True while the event day has not arrived yet (used by templates). */
+  isUpcoming(event: SchoolEvent): boolean {
+    return isEventUpcoming(event);
+  }
+  /** Numbers shown at the top of the admin home. */
+  readonly adminStats = computed(() => {
+    this.schoolDay(); // recompute when the school day changes (app left open overnight)
+    const live = this.state().events.filter(
+      (event) => (event.approvalStatus ?? 'approved') === 'approved' && !event.cancelled,
+    );
+    return {
+      today: live.filter((event) => !isEventOver(event) && !isEventUpcoming(event)).length,
+      upcoming: live.filter((event) => isEventUpcoming(event)).length,
+      pending: this.pendingEvents().length,
+      students: this.state().students.length,
+    };
+  });
+  /** Events still to come or on today (rejected, cancelled and finished ones left out). */
+  readonly adminUpcomingEvents = computed(() => {
+    this.schoolDay(); // recompute when the school day changes (app left open overnight)
+    return this.state()
+      .events.filter(
+        (event) =>
+          event.approvalStatus !== 'rejected' && !event.cancelled && !isEventOver(event),
+      )
+      .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`))
+      .slice(0, 6);
+  });
+  /**
+   * What is on today or coming up, soonest first, for the organizer's home. Finished,
+   * cancelled and rejected events are left out; the Events page still lists everything.
+   */
+  readonly organizerEvents = computed(() => {
+    this.schoolDay(); // a finished day moves its events out of the list
+    return this.state()
+      .events.filter(
+        (event) => event.approvalStatus !== 'rejected' && !event.cancelled && !isEventOver(event),
+      )
+      .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`));
+  });
+  /** The event featured at the top of the organizer's home. */
+  readonly organizerNext = computed<SchoolEvent | undefined>(() => this.organizerEvents()[0]);
+  /** The next five after it (the home page shows only a few; the Events page has the full list). */
+  readonly organizerMore = computed(() => this.organizerEvents().slice(1, 6));
+  /** A student's events that are not over yet, soonest first (cancelled ones left out). */
+  private readonly studentUpcoming = computed(() => {
+    this.schoolDay(); // recompute when the school day changes (app left open overnight)
+    return this.myEvents()
+      .filter(
+        (event) =>
+          (event.approvalStatus ?? 'approved') === 'approved' &&
+          !event.cancelled &&
+          !isEventOver(event),
+      )
+      .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`));
+  });
+  /** The one event to feature on a student's home screen. */
+  readonly nextEvent = computed(() => this.studentUpcoming()[0]);
+  /** A few more events after the featured one. */
+  readonly otherUpcoming = computed(() => this.studentUpcoming().slice(1, 6));
+  /** "Today", "Tomorrow" or "In 5 days". */
+  whenLabel(date: string): string {
+    const days = Math.round(
+      (new Date(`${date}T12:00:00Z`).getTime() -
+        new Date(`${schoolDateKey()}T12:00:00Z`).getTime()) /
+        86400000,
+    );
+    if (days <= 0) return 'Today';
+    return days === 1 ? 'Tomorrow' : `In ${days} days`;
+  }
+  readonly activeEvent = computed(() => {
+    const pool = this.myEvents();
+    return (
+      pool.find((item) => item.id === this.state().selectedEventId) ??
+      pool[0] ??
+      this.state().events.find((item) => item.id === this.state().selectedEventId) ??
+      this.state().events[0]
+    );
+  });
   /** What the signed-in person may do with the open event, by status and role. */
   readonly actions = computed(() => {
+    this.schoolDay(); // recompute when the school day changes (app left open overnight)
     const event = this.activeEvent();
     const hasAttendance = !!event && this.state().attendance.some((record) => record.eventId === event.id);
     return eventActions(event, this.auth.role(), this.auth.userId(), hasAttendance);
@@ -82,6 +204,13 @@ export abstract class HomeBaseDirective {
       (event) => (event.approvalStatus ?? 'approved') === 'approved' && !event.cancelled,
     ),
   );
+  /** Events that can be scanned right now: approved, on, and already started (today). */
+  readonly scannableEvents = computed(() => {
+    this.schoolDay(); // recompute when the school day changes (app left open overnight)
+    return this.workingEvents().filter(
+      (event) => !isEventOver(event) && !isEventUpcoming(event),
+    );
+  });
   readonly activeStudent = computed<Student>(
     () =>
       this.state().students.find(
@@ -116,7 +245,7 @@ export abstract class HomeBaseDirective {
       screen: 'announcements',
       icon: 'chatbubble-outline',
       label: 'Updates',
-      badge: this.visibleAnnouncements().length,
+      badge: this.unreadAnnouncements().length,
     };
     const settings: TabItem = { screen: 'settings', icon: 'settings-outline', label: 'Settings' };
     const attendance: TabItem = {
@@ -156,7 +285,6 @@ export abstract class HomeBaseDirective {
     [
       'event-details',
       'edit-event',
-      'seating',
       'scan',
       'attendance',
       'reports',
@@ -197,6 +325,51 @@ export abstract class HomeBaseDirective {
     });
   });
 
+  // ---- Read / unread announcements (remembered per signed-in user on this device) ----
+  private readonly readStore = signal<Record<string, string[]>>(
+    HomeBaseDirective.loadReadStore(),
+  );
+  readonly openAnnouncementId = signal<string | null>(null);
+  private static loadReadStore(): Record<string, string[]> {
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem('announcementsRead') ?? '{}');
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, string[]>) : {};
+    } catch {
+      return {};
+    }
+  }
+  private readKey(): string {
+    return this.auth.userId() ?? this.auth.studentId() ?? this.auth.username() ?? 'guest';
+  }
+  readonly readAnnouncementIds = computed(
+    () => new Set(this.readStore()[this.readKey()] ?? []),
+  );
+  readonly unreadAnnouncements = computed(() =>
+    this.visibleAnnouncements().filter((item) => !this.readAnnouncementIds().has(item.id)),
+  );
+  readonly readAnnouncements = computed(() =>
+    this.visibleAnnouncements().filter((item) => this.readAnnouncementIds().has(item.id)),
+  );
+  readonly openAnnouncement = computed(
+    () => this.visibleAnnouncements().find((item) => item.id === this.openAnnouncementId()) ?? null,
+  );
+  viewAnnouncement(id: string): void {
+    this.openAnnouncementId.set(id);
+    const key = this.readKey();
+    const current = this.readStore()[key] ?? [];
+    if (current.includes(id)) return;
+    const next = { ...this.readStore(), [key]: [...current, id] };
+    this.readStore.set(next);
+    try {
+      localStorage.setItem('announcementsRead', JSON.stringify(next));
+    } catch {
+      // Read state just won't persist if storage is unavailable.
+    }
+  }
+  closeAnnouncement(): void {
+    this.openAnnouncementId.set(null);
+  }
+
   protected async askReason(
     header: string,
     message: string,
@@ -233,12 +406,11 @@ export abstract class HomeBaseDirective {
     return mobile?.startsWith('+63') ? `0${mobile.slice(3)}` : (mobile ?? '');
   }
   formatDateTime(value: string): string {
-    return new Date(value).toLocaleString([], {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    return dateTimeLabel(value);
+  }
+  /** "08:00" → "8:00 AM" for event times. */
+  clock12(value: string | null | undefined): string {
+    return clock12(value);
   }
   authUsername = '';
   protected reader?: BrowserMultiFormatReader;
@@ -257,27 +429,38 @@ export abstract class HomeBaseDirective {
   }
 
   /** A small, non-blocking confirmation (ion-toast). */
+  /**
+   * The small message at the bottom of the screen. It is our own element fixed to the
+   * screen (not Ionic's toast), so it stays put while the page scrolls.
+   */
+  readonly toastState = signal<{
+    message: string;
+    color: 'success' | 'danger' | 'warning';
+    undo?: () => void;
+  } | null>(null);
+  private toastTimer?: ReturnType<typeof setTimeout>;
+
   protected showToast(
     message: string,
     color: 'success' | 'danger' | 'warning' = 'success',
     undo?: () => void,
   ): void {
     this.buzz(color === 'success' ? 'light' : 'warning');
-    const anchor = document.getElementById('main-tabs');
-    void this.toastCtrl
-      .create({
-        message,
-        duration: undo ? 5000 : 3200,
-        color,
-        position: 'bottom',
-        positionAnchor: anchor ?? undefined,
-        icon: color === 'success' ? 'checkmark-circle-outline' : 'alert-circle-outline',
-        buttons: undo
-          ? [{ text: 'Undo', role: 'cancel', handler: () => undo() }]
-          : [{ text: 'OK', role: 'cancel' }],
-      })
-      .then((toast) => toast.present())
-      .catch(() => undefined);
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastState.set({ message, color, undo });
+    this.toastTimer = setTimeout(() => this.dismissToast(), undo ? 5000 : 3200);
+  }
+
+  dismissToast(): void {
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = undefined;
+    this.toastState.set(null);
+  }
+
+  undoToast(): void {
+    const undo = this.toastState()?.undo;
+    this.dismissToast();
+    undo?.();
   }
 
   /** Haptic feedback on a device; silently does nothing in a browser. */
@@ -312,6 +495,8 @@ export abstract class HomeBaseDirective {
     header: string,
     message: string,
     confirmText: string,
+    // The confirm button is red for things that cannot be undone; plain for an approval.
+    danger = true,
   ): Promise<boolean> {
     try {
       const alert = await this.alertCtrl.create({
@@ -319,7 +504,7 @@ export abstract class HomeBaseDirective {
         message,
         buttons: [
           { text: 'Cancel', role: 'cancel' },
-          { text: confirmText, role: 'confirm', cssClass: 'alert-danger' },
+          { text: confirmText, role: 'confirm', cssClass: danger ? 'alert-danger' : undefined },
         ],
       });
       await alert.present();
@@ -331,20 +516,19 @@ export abstract class HomeBaseDirective {
   }
   protected allowedScreens(role: UserRole): string[] {
     if (role === 'student') {
-      return ['home', 'events', 'event-details', 'announcements', 'my-qr', 'history', 'excuse-request', 'settings', 'settings-username', 'settings-password', 'settings-contact'];
+      return ['home', 'events', 'event-details', 'announcements', 'my-qr', 'history', 'excuse-request', 'settings', ];
     }
     if (role === 'organizer') {
-      return ['home', 'events', 'event-details', 'create-event', 'edit-event', 'scan', 'attendance', 'reports', 'seating', 'announcements', 'sms', 'settings', 'settings-username', 'settings-password'];
+      return ['home', 'events', 'event-details', 'create-event', 'edit-event', 'scan', 'attendance', 'reports', 'announcements', 'sms', 'settings'];
     }
     return [
       'home', 'events', 'students', 'event-details',
-      'create-event', 'edit-event', 'seating', 'scan', 'attendance', 'history', 'reports',
+      'create-event', 'edit-event', 'scan', 'attendance', 'history', 'reports',
       'compose-sms', 'sms', 'my-qr', 'settings', 'settings-accounts',
       'settings-account-create', 'settings-account-reset', 'settings-sections',
-      'settings-attendance', 'settings-app', 'settings-advanced', 'announcements',
-      'settings-username', 'settings-password',
+      'settings-app', 'settings-advanced', 'announcements',
       'student-detail', 'settings-activity', 'settings-organizers', 'excuses',
-      'postpone-event', 'settings-school-year', 'event-approvals',
+      'settings-school-year', 'event-approvals',
     ];
   }
   protected homeScreenForRole(): string {
@@ -352,11 +536,14 @@ export abstract class HomeBaseDirective {
   }
   /** Staff pages that need a live event switch to one if the open event cannot be used. */
   protected ensureWorkingEvent(screen: string): void {
-    if (!['scan', 'attendance', 'reports', 'seating'].includes(screen)) return;
+    if (!['scan', 'attendance', 'reports'].includes(screen)) return;
     if (this.auth.role() === 'student' || !this.auth.role()) return;
-    if (this.actions().scan) return;
-    const today = new Date().toISOString().slice(0, 10);
-    const list = [...this.workingEvents()].sort((a, b) => {
+    // Past events stay viewable in reports; scanning and the live monitor need a live event.
+    const actions = this.actions();
+    if (screen === 'scan' ? actions.scan : screen === 'attendance' ? actions.monitor : actions.report) return;
+    const today = schoolDateKey();
+    const pool = screen === 'scan' ? this.scannableEvents() : this.workingEvents();
+    const list = [...pool].sort((a, b) => {
       const rank = (e: SchoolEvent) => (e.date === today ? 0 : e.date > today ? 1 : 2);
       return rank(a) - rank(b) || (rank(a) === 2 ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date));
     });
@@ -414,12 +601,7 @@ export abstract class HomeBaseDirective {
     });
   }
   formatTime(value: string | null | undefined): string {
-    return value
-      ? new Date(value).toLocaleTimeString([], {
-          hour: 'numeric',
-          minute: '2-digit',
-        })
-      : '—';
+    return timeOfDay(value);
   }
   statusClass(status: AttendanceStatus | string): string {
     return status.toLowerCase().replaceAll(' ', '-');

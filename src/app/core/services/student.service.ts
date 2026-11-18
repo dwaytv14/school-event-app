@@ -1,6 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { Student } from '../models/school-event.models';
 import { DemoStoreService } from './demo-store.service';
+import { isStudentRequired } from './event-roster';
 
 @Injectable({ providedIn: 'root' })
 export class StudentService {
@@ -20,49 +21,12 @@ export class StudentService {
     this.store.update((state) => {
       state.students.push(student);
       state.events.forEach((event) => {
-        if (event.seatingPlan) {
-          if (!(event.requiredSections ?? []).includes(student.sectionId ?? '')) {
-            return;
-          }
-          if (!event.sections.includes(student.section))
-            event.sections.push(student.section);
-          return;
-        }
-        if (!event.sections.includes(student.section))
+        if (
+          isStudentRequired(event, student) &&
+          !event.sections.includes(student.section)
+        ) {
           event.sections.push(student.section);
-
-        const sectionSeats = event.seats.filter(
-          (seat) => seat.section === student.section,
-        );
-        const sectionId = student.section.replaceAll(' ', '-').toLowerCase();
-        if (sectionSeats.length === 0) {
-          event.seats.push(
-            ...Array.from({ length: 12 }, (_, index) => ({
-              id: `${event.id}-${sectionId}-${index + 1}`,
-              section: student.section,
-              row: Math.floor(index / 6) + 1,
-              number: (index % 6) + 1,
-              studentId: index === 0 ? student.id : null,
-            })),
-          );
-          return;
         }
-
-        const availableSeat = sectionSeats.find((seat) => !seat.studentId);
-        if (availableSeat) {
-          availableSeat.studentId = student.id;
-          return;
-        }
-
-        const seatCount = sectionSeats.length;
-        const seatNumber = seatCount + 1;
-        event.seats.push({
-          id: `${event.id}-${sectionId}-${seatNumber}`,
-          section: student.section,
-          row: Math.floor(seatCount / 6) + 1,
-          number: (seatCount % 6) + 1,
-          studentId: student.id,
-        });
       });
     });
 

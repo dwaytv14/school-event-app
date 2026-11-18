@@ -4,7 +4,13 @@ export type SyncStatus = 'Pending sync' | 'Synced';
 
 export interface Student {
   id: string;
+  /** Full name as one string: first, middle, last, extension. */
   name: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  /** Optional suffix such as Jr. or III. */
+  extension?: string;
   section: string;
   mobile: string;
   course?: string;
@@ -54,9 +60,12 @@ export interface Event {
   description: string;
   graceMinutes: number;
   sections: string[];
+  /** Legacy seating data retained when reading events saved before seating was removed. */
   seats: Seat[];
+  /** Legacy seating data retained when reading events saved before seating was removed. */
   seatingPlan?: EventSeatingPlan;
   requiredSections?: string[];
+  expectedAttendeeCount?: number;
   approvalStatus?: 'pending' | 'approved' | 'rejected';
   rejectionReason?: string;
   createdBy?: string;
@@ -70,6 +79,8 @@ export interface Event {
    * ids of the students who were required. It keeps past events accurate.
    */
   roster?: Record<string, string[]>;
+  /** Set when the admin presses "Finish event": the moment the event really ended. */
+  finishedAt?: string;
   /** The original schedule, kept when an event is moved to a new date or time. */
   postponedFrom?: { date: string; startTime: string; endTime: string };
 }

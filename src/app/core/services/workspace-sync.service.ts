@@ -1,6 +1,8 @@
 import { inject, Injectable, signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { AppState, SmsMessage } from '../models/school-event.models';
+import { closeRecordsOfFinishedEvents } from './attendance.service';
+import { AttendanceSyncService } from './attendance-sync.service';
 import { AuthService } from './auth.service';
 import { DemoStoreService } from './demo-store.service';
 import { DeviceStateService } from './device-state.service';
@@ -19,6 +21,7 @@ export class WorkspaceSyncService {
   private readonly device = inject(DeviceStateService);
   private readonly api = inject(WorkspaceApiService);
   private readonly sms = inject(SmsService);
+  private readonly attendanceSync = inject(AttendanceSyncService);
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
   readonly lastSyncedAt = signal<string | null>(null);
@@ -126,6 +129,7 @@ export class WorkspaceSyncService {
       );
     }
     localStorage.setItem(ACTIVE_WORKSPACE_KEY, username);
+    this.attendanceSync.restore(cached?.attendanceSync);
 
     if (!this.canSync()) {
       if (!cached) {
@@ -157,6 +161,7 @@ export class WorkspaceSyncService {
       } else {
         await this.applyRemote(remote);
       }
+      await this.syncAttendanceStep();
       this.error.set(null);
       this.lastSyncedAt.set(new Date().toISOString());
     } catch (error) {
@@ -197,6 +202,7 @@ export class WorkspaceSyncService {
       } else if (remote.revision !== this.revision || this.pending()) {
         await this.applyRemote(remote);
       }
+      await this.syncAttendanceStep();
       this.error.set(null);
       this.lastSyncedAt.set(new Date().toISOString());
     } catch (error) {
@@ -204,6 +210,19 @@ export class WorkspaceSyncService {
       throw error;
     } finally {
       this.busy.set(false);
+    }
+  }
+
+  /**
+   * Attendance is synced separately from the rest of the workspace: ask for what changed,
+   * send what we changed. A failure keeps the changes safe on this device for the next try.
+   */
+  private async syncAttendanceStep(): Promise<void> {
+    try {
+      await this.attendanceSync.sync();
+    } finally {
+      await this.saveCache(this.store.state(), this.pending());
+      if (this.attendanceSync.hasUnsynced()) this.pending.set(true);
     }
   }
 
@@ -240,6 +259,7 @@ export class WorkspaceSyncService {
       false,
     );
     this.revision = revision;
+    this.attendanceSync.restore(undefined);
     this.resetPending = false;
     this.pending.set(false);
     this.generation += 1;
@@ -291,6 +311,11 @@ export class WorkspaceSyncService {
           return;
         }
         this.pending.set(false);
+        if (saved.refresh) {
+          // The server corrected something (see the attendance rules), so use its copy.
+          await this.applyRemote(await this.api.loadWorkspace(this.auth.getToken()));
+          return;
+        }
         await this.applyRemote({ ...next, revision: saved.revision });
         return;
       } catch (error) {
@@ -322,6 +347,8 @@ export class WorkspaceSyncService {
       messages: [],
       announcements: snapshot.state.announcements ?? [],
     };
+    // Attendance has its own sync; the workspace never carries it.
+    state.attendance = closeRecordsOfFinishedEvents(state.events, this.store.state().attendance);
     this.store.replace(state, false);
     await this.sms.replaceFromSync(snapshot.state.messages);
     this.revision = snapshot.revision;
@@ -351,6 +378,7 @@ export class WorkspaceSyncService {
       this.revision,
       dirty,
       resetPending,
+      this.attendanceSync.snapshot(),
     );
   }
 
@@ -367,18 +395,17 @@ export class WorkspaceSyncService {
     local: WorkspaceSnapshot,
   ): WorkspaceSnapshot {
     const organizer = this.auth.role() === 'organizer';
+    const events = organizer
+      ? this.mergeOrganizerEvents(remote.state.events, local.state.events)
+      : this.mergeById(remote.state.events, local.state.events);
+    const attendance = closeRecordsOfFinishedEvents(events, local.state.attendance);
     return {
       revision: remote.revision,
       state: {
         // Only the server changes student profiles (signup, contact number).
         students: this.preferRemoteById(remote.state.students, local.state.students),
-        events: organizer
-          ? this.mergeOrganizerEvents(remote.state.events, local.state.events)
-          : this.mergeById(remote.state.events, local.state.events),
-        attendance: this.mergeById(
-          remote.state.attendance,
-          local.state.attendance,
-        ),
+        events,
+        attendance,
         violations: this.mergeById(
           remote.state.violations,
           local.state.violations,

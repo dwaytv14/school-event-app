@@ -1,5 +1,5 @@
 import { ScanResult } from '../core/services/attendance.service';
-import { EventSeatingPlan, Seat, Student } from '../core/models/school-event.models';
+import { Student } from '../core/models/school-event.models';
 
 export interface MonitorState {
   key: 'Here' | 'Out' | 'Excused' | 'Not yet';
@@ -18,19 +18,5 @@ export interface TabItem {
 
 export interface DisplayScan extends ScanResult {
   student?: Student;
-  seat?: Seat;
-  seatLocation?: string;
   time: string;
-}
-
-export function emptySeatingPlan(): EventSeatingPlan {
-  return {
-    gymnasiumBenchGroups: [],
-    sharedSeatCount: 0,
-    rows: 0,
-    seatsPerRow: 10,
-    blocks: [{ rows: 0, seatsPerRow: 10 }],
-    sharedSectionIds: [],
-    sectionSeatCounts: {},
-  };
 }
